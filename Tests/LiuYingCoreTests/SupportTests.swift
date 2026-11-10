@@ -198,6 +198,18 @@ final class SQLiteDatabaseTests: XCTestCase {
         XCTAssertEqual(try db.query("SELECT * FROM t;").count, 1)
     }
 
+    /// 整段事务持锁：并发的 BEGIN/COMMIT 不能互相嵌套或把别人的写入一起回滚。
+    func testConcurrentTransactionsDoNotLoseWrites() throws {
+        let db = try SQLiteDatabase(path: path)
+        try db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);")
+        DispatchQueue.concurrentPerform(iterations: 20) { index in
+            try? db.transaction {
+                try db.run("INSERT INTO t (name) VALUES (?);", [.text("n\(index)")])
+            }
+        }
+        XCTAssertEqual(try db.query("SELECT * FROM t;").count, 20)
+    }
+
     func testUserVersionPersists() throws {
         do {
             let db = try SQLiteDatabase(path: path)

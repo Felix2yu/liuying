@@ -100,6 +100,9 @@ public actor SubscriptionStore {
     }
 
     /// - Parameter disable: 连续失败达到阈值时自动停用并记原因（熔断）。
+    ///
+    /// 只累加错误数，绝不把 enabled 写回 1：用户手动停用的订阅如果碰巧被轮询了一次
+    /// 并失败，旧实现 `.bool(!disable)` 会把它重新启用，等于用户的选择被静默撤销。
     public func recordFailure(id: Int64, error: String, disable: Bool) throws {
         let now = Date().timeIntervalSince1970
         let current = try database.queryOne(
@@ -109,12 +112,15 @@ public actor SubscriptionStore {
             """
             UPDATE subscriptions SET
                 last_polled = ?, consecutive_errors = ?,
-                enabled = ?, disabled_reason = ?, updated_at = ?
+                enabled = CASE WHEN ? THEN 0 ELSE enabled END,
+                disabled_reason = CASE WHEN ? THEN ? ELSE disabled_reason END,
+                updated_at = ?
             WHERE id = ?;
             """,
             [
                 .double(now), .int(current + 1),
-                .bool(!disable), .text(String(error.prefix(300))), .double(now), .int(id),
+                .bool(disable), .bool(disable), .text(String(error.prefix(300))),
+                .double(now), .int(id),
             ]
         )
     }

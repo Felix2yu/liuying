@@ -14,8 +14,8 @@ final class SubscriptionService {
         self.poller = poller
     }
 
-    func all() async -> [Subscription] {
-        (try? await store.all()) ?? []
+    func all() async throws -> [Subscription] {
+        try await store.all()
     }
 
     /// - Returns: nil 表示成功，否则是给用户看的错误文案。
@@ -35,19 +35,31 @@ final class SubscriptionService {
         }
     }
 
-    func remove(id: Int64) async {
-        try? await store.remove(id: id)
+    /// - Returns: nil 表示成功，否则是给用户看的错误文案。
+    func remove(id: Int64) async -> String? {
+        do {
+            try await store.remove(id: id)
+            return nil
+        } catch {
+            return "删除失败：\(error.localizedDescription)"
+        }
     }
 
-    func setEnabled(id: Int64, enabled: Bool) async {
-        try? await store.setEnabled(id: id, enabled: enabled)
+    func setEnabled(id: Int64, enabled: Bool) async -> String? {
+        do {
+            try await store.setEnabled(id: id, enabled: enabled)
+            return nil
+        } catch {
+            return "切换启用状态失败：\(error.localizedDescription)"
+        }
     }
 
-    func pollNow(subscriptionID: Int64) async {
-        _ = await poller.pollNow(subscriptionID: subscriptionID)
+    /// 返回完整结果，UI 才能显示「新增 N 条」或 412 风控错误，而不是毫无反应。
+    func pollNow(subscriptionID: Int64) async -> SubscriptionPoller.PollOutcome? {
+        await poller.pollNow(subscriptionID: subscriptionID)
     }
 
-    func importRecent(subscriptionID: Int64, count: Int) async {
-        _ = await poller.importRecent(subscriptionID: subscriptionID, count: count)
+    func importRecent(subscriptionID: Int64, count: Int) async -> SubscriptionPoller.PollOutcome? {
+        await poller.importRecentOutcome(subscriptionID: subscriptionID, count: count)
     }
 }

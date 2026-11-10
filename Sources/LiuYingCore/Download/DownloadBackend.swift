@@ -7,16 +7,24 @@ public struct DownloadResult: Sendable {
     public var cancelled: Bool
     /// 后端原始输出（已截断），失败时用于诊断。
     public var logTail: [String]
+    /// 是否真的确认了产出文件，从而允许把链接从 links.txt 删掉。
+    /// Downie 是异步入队、yutto 退出 0 但零产出都不能删——否则链接丢了就再也找不回来。
+    public var safeToPrune: Bool
+    /// 已交给外部应用（Downie），完成与否只能由用户确认，任务进 .sent 而非 .done。
+    public var handedOff: Bool
 
     public init(
         success: Bool, outputs: [TaskOutput] = [], errorMessage: String? = nil,
-        cancelled: Bool = false, logTail: [String] = []
+        cancelled: Bool = false, logTail: [String] = [], safeToPrune: Bool = false,
+        handedOff: Bool = false
     ) {
         self.success = success
         self.outputs = outputs
         self.errorMessage = errorMessage
         self.cancelled = cancelled
         self.logTail = logTail
+        self.safeToPrune = safeToPrune
+        self.handedOff = handedOff
     }
 }
 
@@ -123,9 +131,15 @@ public struct YuttoBackend: DownloadBackend {
         }
         let newFiles = after.newFiles(comparedTo: before)
         if newFiles.isEmpty {
-            // 视频已存在时 yutto 会跳过且返回 0。旧版同样按成功处理。
-            Log.warning("yutto 成功但未发现新文件（可能已存在）：\(url)")
-            return DownloadResult(success: true, outputs: [], logTail: tail.snapshot)
+            // 退出 0 但零产出，可能是视频已存在、输出目录不对、下载被跳过，也可能是
+            // 快照被别的进程污染。旧实现按成功处理，UI 会显示「已完成」却什么都没有，
+            // 而且没有重试入口。现在按可重试的失败处理（不删 links.txt）。
+            Log.warning("yutto 退出 0 但未发现新文件：\(url)")
+            return DownloadResult(
+                success: false,
+                errorMessage: "yutto 退出 0 但没有产出新文件：视频可能已存在、输出目录不对或下载被跳过。请查看日志；确实已下载可在队列里标记完成。",
+                logTail: tail.snapshot
+            )
         }
 
         let ffprobe = Subprocess.lookupOnPATH("ffprobe")
@@ -140,7 +154,9 @@ public struct YuttoBackend: DownloadBackend {
             outputs.append(TaskOutput(path: finalPath, kind: "video", bytes: bytes))
         }
         Log.success("yutto 下载完成：\(outputs.count) 个文件")
-        return DownloadResult(success: true, outputs: outputs, logTail: tail.snapshot)
+        return DownloadResult(
+            success: true, outputs: outputs, logTail: tail.snapshot, safeToPrune: true
+        )
     }
 
     private func resolveBinary() -> String? {
@@ -157,7 +173,8 @@ public struct YuttoBackend: DownloadBackend {
 }
 
 /// Downie 4 官方集成：`downie://XUOpenURL?url=…&postprocessing=…&destination=…`。
-/// GUI 应用，脚本侧无法判定完成，**入队即视为成功**（与旧版一致）。
+/// GUI 应用，脚本侧无法判定完成：入队成功后任务落「已交给 Downie」(.sent)，
+/// 由用户在队列里确认完成。旧版直接记 done 并把链接删掉，没下成时无从恢复。
 public struct DownieBackend: DownloadBackend {
     public let name = "downie"
     private let config: DownieConfig
@@ -203,14 +220,16 @@ public struct DownieBackend: DownloadBackend {
                 errorMessage: "调用 Downie 失败：\(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
             )
         }
-        // Downie 是异步的，这里只能确认「已入队」。
+        // Downie 是异步的，这里只能确认「已入队」。任务落 .sent，由用户在队列里确认完成；
+        // 确认前不删 links.txt，也不算进「已完成」。
         return DownloadResult(
             success: true,
             outputs: [TaskOutput(
                 path: Self.destinationDirectory(config: config, downloadDir: downloadDir),
                 kind: "downie"
             )],
-            logTail: ["已交给 Downie，下载进度请在 Downie 里查看"]
+            logTail: ["已交给 Downie，下载进度请在 Downie 里查看"],
+            handedOff: true
         )
     }
 

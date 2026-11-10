@@ -1,10 +1,57 @@
 import Foundation
 
+/// 手动添加的结果明细：把「没识别到链接」「全部重复」「入队失败」区分开。
+public struct ManualAddResult: Sendable, Equatable {
+    public var parsed: Int
+    public var added: Int
+    public var duplicates: Int
+    /// 本次真正插入的任务 id，用于「撤销本次添加」。
+    public var addedIDs: [Int64]
+    public var failure: String?
+
+    public init(
+        parsed: Int = 0, added: Int = 0, duplicates: Int = 0,
+        addedIDs: [Int64] = [], failure: String? = nil
+    ) {
+        self.parsed = parsed
+        self.added = added
+        self.duplicates = duplicates
+        self.addedIDs = addedIDs
+        self.failure = failure
+    }
+}
+
+/// 一次入队的汇总（重复数只用于 UI 反馈，引擎主循环只看 added）。
+public struct EnqueueOutcome: Sendable, Equatable {
+    public var added: Int
+    public var duplicates: Int
+    public var addedIDs: [Int64]
+
+    public init(added: Int = 0, duplicates: Int = 0, addedIDs: [Int64] = []) {
+        self.added = added
+        self.duplicates = duplicates
+        self.addedIDs = addedIDs
+    }
+}
+
 /// 主编排器：轮询 → 去重入队 → 串行下载 → 容器规整 → 删链接 → 通知。
 ///
 /// 串行下载是刻意的（与旧版一致）：并发下载既抢带宽，也更容易触发 B 站风控。
 public actor Engine {
     public typealias SnapshotSink = @Sendable (EngineSnapshot) -> Void
+
+    /// 终态落库失败时的补写队列。写失败绝不能被 try? 吞掉：任务会永久停在
+    /// downloading（claim 只挑 pending、delete 拒删），只能靠重启恢复。
+    private struct StateWrite: Sendable {
+        var id: Int64
+        var state: TaskState
+        var outputs: [TaskOutput]
+        var error: String?
+        var backend: String?
+        var title: String?
+        var ownerName: String?
+        var bvid: String?
+    }
 
     private let store: TaskStore
     private let keyResolver = KeyResolver()
@@ -23,34 +70,42 @@ public actor Engine {
     private var tickRequested = false
     private var currentHandle: ProcessHandle?
     private var logTail = LogTail()
+    private var pendingStateWrites: [StateWrite] = []
+    /// 快照里带多少条历史。默认 30 条够菜单栏用，队列页可逐步加载更多。
+    private var recentLimit = 30
 
     /// 下载成功后待从 links.txt 清掉的 URL / canonical key。
-    private var pendingPrune: Set<String> = []
+    /// 保序：截断时不能随机丢掉还没清理的键。
+    private var pendingPrune: [String] = []
     private var pruneFailures = 0
     private var nextPruneAllowedAt = Date.distantPast
 
+    /// - Parameter biliClient: 由 App 层注入，与订阅轮询器**共用同一个实例**。
+    ///   两个独立实例时改 SESSDATA 只会更新引擎里的那个，订阅仍拿旧凭据被 412 风控。
     public init(
         store: TaskStore,
         config: AppConfig,
         notifier: any EngineNotifying = NoopNotifier(),
-        subscriptionPoller: SubscriptionPoller? = nil
+        subscriptionPoller: SubscriptionPoller? = nil,
+        biliClient: BiliClient? = nil
     ) {
         self.store = store
         self.config = config
         self.notifier = notifier
         self.subscriptionPoller = subscriptionPoller
         self.linkSource = ICloudLinkSource(configuredPath: config.watchFile)
-        self.biliClient = BiliClient(sessdata: Self.resolveSessdata(config))
+        self.biliClient = biliClient ?? BiliClient(sessdata: Self.resolveSessdata(config))
     }
 
     // MARK: - 配置
 
-    public func updateConfig(_ newConfig: AppConfig) {
+    public func updateConfig(_ newConfig: AppConfig) async {
         config = newConfig
-        Task {
-            await linkSource.reconfigure(configuredPath: newConfig.watchFile)
-            await biliClient.updateSessdata(Self.resolveSessdata(newConfig))
-        }
+        await linkSource.reconfigure(configuredPath: newConfig.watchFile)
+        await biliClient.updateSessdata(Self.resolveSessdata(newConfig))
+        await subscriptionPoller?.setNotifyEnabled(newConfig.notify)
+        // 间隔从 1 小时改成 5 秒不该再等满当前这一轮。
+        tickRequested = true
     }
 
     public func setNotifier(_ notifier: any EngineNotifying) {
@@ -80,6 +135,8 @@ public actor Engine {
         loopTask = Task { [weak self] in
             await self?.runLoop()
         }
+        // 立刻发布一次：不发布的话 UI 要等到第一轮跑完才知道引擎已运行。
+        Task { await publish() }
         Log.info("引擎启动：轮询 \(max(5, config.pollInterval))s")
     }
 
@@ -88,8 +145,18 @@ public actor Engine {
         loopTask = nil
         currentHandle?.cancel()
         snapshot.isRunning = false
+        Self.cleanupWorkDirectories()
         Task { await publish() }
         Log.info("引擎已停止")
+    }
+
+    /// 强退/终止时 process 的 defer 可能没跑到，work/task-* 会越攒越多。
+    private static func cleanupWorkDirectories() {
+        let fm = FileManager.default
+        let root = AppIdentity.workDirectory
+        for name in ((try? fm.contentsOfDirectory(atPath: root)) ?? []) where name.hasPrefix("task-") {
+            try? fm.removeItem(atPath: (root as NSString).appendingPathComponent(name))
+        }
     }
 
     public func pause() {
@@ -131,13 +198,18 @@ public actor Engine {
     }
 
     private func runRound() async {
+        await flushStateWrites()
         do {
             _ = try await ingestOnce()
             if !paused {
                 _ = try await processOnce()
             }
             await flushPrune()
-            snapshot.lastError = nil
+            if pendingStateWrites.isEmpty {
+                snapshot.lastError = nil
+            } else {
+                snapshot.lastError = "有 \(pendingStateWrites.count) 个任务状态写入失败，正在重试"
+            }
         } catch {
             snapshot.lastError = error.localizedDescription
             Log.error("主循环异常：\(error)")
@@ -157,12 +229,12 @@ public actor Engine {
     private func ingestOnce() async throws -> Int {
         var added = 0
         let urls = await linkSource.collect()
-        added += try await enqueue(urls: urls, source: .icloud)
+        added += try await enqueue(urls: urls, source: .icloud).added
 
         if config.clipboardMonitor {
             let copied = clipboard.poll()
             if !copied.isEmpty {
-                added += try await enqueue(urls: copied, source: .clipboard)
+                added += try await enqueue(urls: copied, source: .clipboard).added
             }
         }
 
@@ -179,44 +251,74 @@ public actor Engine {
         source: TaskSource,
         subscriptionID: Int64? = nil,
         metadata: [String: BiliVideo] = [:]
-    ) async throws -> Int {
-        guard !urls.isEmpty else { return 0 }
+    ) async throws -> EnqueueOutcome {
+        guard !urls.isEmpty else { return EnqueueOutcome() }
         var known = try await store.knownKeys()
-        var added = 0
+        var outcome = EnqueueOutcome()
         for url in urls {
             let key = await keyResolver.key(for: url)
-            guard !known.contains(key) else { continue }
+            guard !known.contains(key) else {
+                outcome.duplicates += 1
+                continue
+            }
             let video = metadata[key]
             let newTask = NewTask(
                 rawURL: url,
                 taskKey: key,
                 source: source,
                 subscriptionID: subscriptionID,
-                bvid: video?.bvid ?? CanonicalKey.localKey(url),
+                // bvid 只能是纯 BV/av 号；localKey 会带分 P 后缀，不能喂给 API。
+                bvid: video?.bvid ?? CanonicalKey.videoID(in: url),
                 title: video?.title,
                 pubdate: video?.created
             )
-            if (try await store.add(newTask)) != nil {
+            if let id = try await store.add(newTask) {
                 known.insert(key)
-                added += 1
+                outcome.added += 1
+                outcome.addedIDs.append(id)
                 Log.info("新链接入队：\(url)（键 \(key)，来源 \(source.displayName)）")
-                await notifier.taskAdded(title: video?.title ?? key, url: url)
+                if config.notify {
+                    await notifier.taskAdded(title: video?.title ?? key, url: url)
+                }
+            } else {
+                outcome.duplicates += 1
             }
         }
-        return added
+        return outcome
     }
 
     /// App 内手动添加：粘贴一整段分享文案也认。
+    /// 返回明细而不是一个 Int —— 0 可能是「没识别到」「全部重复」或「写库失败」。
     @discardableResult
-    public func addManual(text: String) async -> Int {
+    public func addManual(text: String) async -> ManualAddResult {
         let urls = URLExtractor.extract(from: text)
-        guard !urls.isEmpty else { return 0 }
+        guard !urls.isEmpty else { return ManualAddResult() }
         do {
-            let added = try await enqueue(urls: urls, source: .manual)
+            let outcome = try await enqueue(urls: urls, source: .manual)
             await publish()
-            return added
+            return ManualAddResult(
+                parsed: urls.count, added: outcome.added, duplicates: outcome.duplicates,
+                addedIDs: outcome.addedIDs
+            )
         } catch {
             Log.error("手动添加入队失败：\(error)")
+            return ManualAddResult(parsed: urls.count, failure: error.localizedDescription)
+        }
+    }
+
+    /// 撤销一次手动批量添加。已经开始下载的任务不会被抽走。
+    /// - Returns: 实际撤销的条数。
+    @discardableResult
+    public func undoManual(taskIDs: [Int64]) async -> Int {
+        guard !taskIDs.isEmpty else { return 0 }
+        do {
+            let removed = try await store.deletePending(ids: taskIDs)
+            await publish()
+            return removed
+        } catch {
+            Log.error("撤销添加失败：\(error)")
+            snapshot.lastError = "撤销添加失败：\(error.localizedDescription)"
+            await publish()
             return 0
         }
     }
@@ -225,9 +327,14 @@ public actor Engine {
 
     private func processOnce() async throws -> Int {
         var completed = 0
-        while !paused, !Task.isCancelled {
+        // 按「处理次数」限流而不是成功次数：失败任务会被放回 pending，
+        // 用成功数计数会导致同一条在一轮里被反复 claim。
+        let limit = max(1, config.maxTasksPerRound)
+        var processed = 0
+        while !paused, !Task.isCancelled, processed < limit {
             let claimed = try await store.claim(limit: 1)
             guard let task = claimed.first else { break }
+            processed += 1
             if await process(task: task) { completed += 1 }
         }
         return completed
@@ -243,7 +350,7 @@ public actor Engine {
         var title = task.title
         var ownerName = task.ownerName
         var bvid = task.bvid
-        if let candidate = bvid ?? CanonicalKey.localKey(task.rawURL), candidate.hasPrefix("BV") {
+        if let candidate = bvid ?? CanonicalKey.videoID(in: task.rawURL), candidate.hasPrefix("BV") {
             if let detail = try? await biliClient.view(bvid: candidate) {
                 title = detail.title
                 ownerName = detail.ownerName
@@ -280,41 +387,108 @@ public actor Engine {
         snapshot.currentText = nil
 
         if result.cancelled {
-            try? await store.retryLater(id: task.id, error: "已取消")
+            // 取消是终态：放回 pending 会让 processOnce 立刻重新 claim，等于「点了取消马上重下」。
+            _ = await commit(StateWrite(
+                id: task.id, state: .cancelled, outputs: [], error: "已取消",
+                backend: backend.name, title: title, ownerName: ownerName, bvid: bvid
+            ))
             Log.warning("下载已取消：\(display)")
             await publish()
             return false
         }
 
         if result.success {
-            try? await store.finish(
-                id: task.id, state: .done, outputs: result.outputs, backend: backend.name,
-                title: title, ownerName: ownerName, bvid: bvid
-            )
-            // 成功后把链接从 links.txt 里清掉（卫生行为，失败不影响正确性）。
-            pendingPrune.insert(task.rawURL)
-            pendingPrune.insert(task.taskKey)
-            if pendingPrune.count > 500 { pendingPrune = Set(pendingPrune.suffix(300)) }
-            Log.success("下载完成：\(display)（\(result.outputs.count) 个文件）")
-            await notifier.taskFinished(title: display, outputPaths: result.outputs.map(\.path))
+            // Downie 只能确认「已交给它」，落 .sent 等用户确认；不算已完成，也不删链接。
+            let state: TaskState = result.handedOff ? .sent : .done
+            guard await commit(StateWrite(
+                id: task.id, state: state, outputs: result.outputs, error: nil,
+                backend: backend.name, title: title, ownerName: ownerName, bvid: bvid
+            )) else {
+                // 状态没写成，绝不能先删 links.txt 或广播成功通知。
+                await publish()
+                return false
+            }
+            if result.handedOff {
+                Log.info("已交给 Downie，等待用户确认完成：\(display)")
+            } else {
+                // 只有「确实来自 links.txt + 后端确认了产出文件」才删行。
+                // 手动/剪贴板/订阅任务的 URL 不在文件里；yutto 零产出也没证明下载成功。
+                if task.source == .icloud, result.safeToPrune {
+                    markPrune(task.rawURL, task.taskKey)
+                }
+                snapshot.libraryRevision += 1
+                Log.success("下载完成：\(display)（\(result.outputs.count) 个文件）")
+                if config.notify {
+                    await notifier.taskFinished(title: display, outputPaths: result.outputs.map(\.path))
+                }
+            }
             await publish()
             return true
         }
 
         let error = result.errorMessage ?? "未知错误"
         if task.attempts >= 3 {
-            try? await store.finish(
-                id: task.id, state: .failed, error: error, backend: backend.name,
-                title: title, ownerName: ownerName, bvid: bvid
-            )
+            _ = await commit(StateWrite(
+                id: task.id, state: .failed, outputs: [], error: error,
+                backend: backend.name, title: title, ownerName: ownerName, bvid: bvid
+            ))
             Log.error("下载失败（已放弃）：\(display) — \(error)")
-            await notifier.taskFailed(title: display, error: error)
+            if config.notify {
+                await notifier.taskFailed(title: display, error: error)
+            }
         } else {
-            try? await store.retryLater(id: task.id, error: error)
-            Log.error("下载失败（将重试）：\(display) — \(error)")
+            do {
+                try await store.retryLater(id: task.id, error: error, attempt: task.attempts)
+                Log.error("下载失败（将退避重试）：\(display) — \(error)")
+            } catch {
+                // 连「放回 pending」都写失败，任务会永久停在 downloading；明确标失败让用户能重投。
+                Log.error("重试状态写入失败：\(error)")
+                _ = await commit(StateWrite(
+                    id: task.id, state: .failed, outputs: [], error: "重试状态写入失败：\(error)",
+                    backend: backend.name, title: title, ownerName: ownerName, bvid: bvid
+                ))
+            }
         }
         await publish()
         return false
+    }
+
+    /// 终态落库：失败不吞，排进补写队列，直到写成功为止。
+    private func commit(_ write: StateWrite) async -> Bool {
+        do {
+            try await store.finish(
+                id: write.id, state: write.state, outputs: write.outputs, error: write.error,
+                backend: write.backend, title: write.title, ownerName: write.ownerName, bvid: write.bvid
+            )
+            return true
+        } catch {
+            Log.error("任务 \(write.id) 状态写入失败：\(error)")
+            snapshot.lastError = "任务状态写入失败：\(error)，下一轮会重试"
+            pendingStateWrites.append(write)
+            return false
+        }
+    }
+
+    private func flushStateWrites() async {
+        guard !pendingStateWrites.isEmpty else { return }
+        var remaining: [StateWrite] = []
+        for write in pendingStateWrites {
+            do {
+                try await store.finish(
+                    id: write.id, state: write.state, outputs: write.outputs, error: write.error,
+                    backend: write.backend, title: write.title, ownerName: write.ownerName, bvid: write.bvid
+                )
+                if write.state == .done || write.state == .sent { snapshot.libraryRevision += 1 }
+            } catch {
+                remaining.append(write)
+            }
+        }
+        pendingStateWrites = remaining
+        if remaining.isEmpty {
+            Log.info("任务状态补写完成")
+        } else {
+            Log.warning("仍有 \(remaining.count) 个任务状态写入失败，继续重试")
+        }
     }
 
     private func makeBackend(for url: String) -> any DownloadBackend {
@@ -341,6 +515,16 @@ public actor Engine {
 
     // MARK: - 删链接
 
+    /// 记录待清理的键；保序插入，超限时截断最旧的一段而不是随机丢键。
+    private func markPrune(_ rawURL: String, _ taskKey: String) {
+        for value in [rawURL, taskKey] where !pendingPrune.contains(value) {
+            pendingPrune.append(value)
+        }
+        if pendingPrune.count > 500 {
+            pendingPrune = Array(pendingPrune.suffix(300))
+        }
+    }
+
     private func flushPrune() async {
         guard !pendingPrune.isEmpty else {
             snapshot.pendingPruneCount = 0
@@ -353,14 +537,18 @@ public actor Engine {
         let path = await linkSource.path
         let result = await LinkFilePruner.apply(
             path: path,
-            consumed: pendingPrune,
-            backupDirectory: nil
+            consumed: Set(pendingPrune),
+            backupDirectory: AppIdentity.backupsDirectory
         )
-        if result.applied {
+        if result.applied || result.nothingMatched {
+            // 「文件里本来就没有这些链接」不是失败：清掉待清理键，避免菜单栏常驻报错
+            // 并连续 3 次后退避 5 分钟，把真正的清理也一起拖住。
             pendingPrune.removeAll()
             pruneFailures = 0
             snapshot.pruneFailure = nil
-            await linkSource.invalidateSignature()
+            if result.applied {
+                await linkSource.invalidateSignature()
+            }
         } else {
             snapshot.pruneFailure = result.reason
             pruneFailures += 1
@@ -382,13 +570,43 @@ public actor Engine {
         await publish()
     }
 
+    /// Downie 任务：用户确认文件确实下载完后，sent → done。
+    /// 确认之前不删 links.txt，也不计入已完成；确认后视频库会自动刷新。
+    public func confirm(taskID: Int64) async {
+        guard let task = try? await store.task(id: taskID) else { return }
+        guard await commit(StateWrite(
+            id: taskID, state: .done, outputs: task.outputs, error: nil,
+            backend: task.backend, title: task.title, ownerName: task.ownerName, bvid: task.bvid
+        )) else {
+            await publish()
+            return
+        }
+        if task.source == .icloud { markPrune(task.rawURL, task.taskKey) }
+        snapshot.libraryRevision += 1
+        tickRequested = true
+        Log.info("已确认完成：\(task.displayTitle)")
+        if config.notify {
+            await notifier.taskFinished(title: task.displayTitle, outputPaths: task.outputs.map(\.path))
+        }
+        await publish()
+    }
+
     public func remove(taskID: Int64) async {
         try? await store.delete(id: taskID)
         await publish()
     }
 
     public func refreshLinkStatus() async {
-        _ = await linkSource.collect()
+        // collect() 会提交文件签名，返回值绝不能丢：启动时这个方法与主循环并行跑，
+        // 旧实现把采到的链接直接扔掉，签名却已更新 → 那些链接再也不会被采集。
+        let urls = await linkSource.collect()
+        if !urls.isEmpty {
+            do {
+                _ = try await enqueue(urls: urls, source: .icloud)
+            } catch {
+                Log.error("刷新链接状态时入队失败：\(error)")
+            }
+        }
         let status = await linkSource.status
         snapshot.linkStatusText = status.displayText
         snapshot.linkStatusHealthy = status.isHealthy
@@ -405,14 +623,28 @@ public actor Engine {
         await publish()
     }
 
+    /// 队列页「加载更多历史」：抬高快照上限，让旧任务／旧失败也可管理。
+    public func showMoreHistory() async {
+        recentLimit = min(recentLimit + 50, 1_000)
+        await publish()
+    }
+
     private func publish() async {
         var next = snapshot
         next.isPaused = paused
         next.pendingPruneCount = pendingPrune.count
         next.currentLog = logTail.snapshot
         if let stats = try? await store.stats() { next.stats = stats }
-        if let recent = try? await store.recent(limit: 30) { next.recent = recent }
-        snapshot = next
+        // 多查一条判断是否还有更旧记录，避免「刚好取满」被误判成还有更多。
+        if let recent = try? await store.recent(limit: recentLimit + 1) {
+            next.recentTruncated = recent.count > recentLimit
+            next.recent = Array(recent.prefix(recentLimit))
+        }
+        next.recentLimit = recentLimit
+        // next 只是一次性投影，绝不能写回 snapshot：
+        // publish 会在 store.stats()/recent() 上挂起，期间 start()、runRound()、
+        // finish() 等会直接改 snapshot（isRunning / lastRoundAt / libraryRevision…）；
+        // 写回旧拷贝会把这些改动全部抹掉（实机表现为引擎明明在轮询，菜单却显示「引擎未运行」）。
         sink?(next)
     }
 

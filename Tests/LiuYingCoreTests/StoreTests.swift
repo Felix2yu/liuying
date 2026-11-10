@@ -88,7 +88,9 @@ final class TaskStoreTests: XCTestCase {
             XCTAssertEqual(attempts, expected)
             let id = try XCTUnwrap(claimed.first?.id)
             try await store.finish(id: id, state: .failed, error: "boom")
-            try await store.retryLater(id: id, error: "boom")
+            try await store.retryLater(id: id, error: "boom", attempt: expected)
+            // 模拟退避到期：本用例只验证 attempts 计数，不验证等待行为。
+            try await store.clearRetryDelay(id: id)
         }
     }
 
@@ -169,6 +171,18 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertNil(task.error)
     }
 
+    func testCancelledTaskIsTerminalAndNotReclaimed() async throws {
+        let id = try await addTask("BV1")
+        _ = try await store.claim(limit: 1)
+        try await store.finish(id: id, state: .cancelled, error: "已取消")
+        let task = try await loadTask(id)
+        XCTAssertEqual(task.state, .cancelled)
+        XCTAssertEqual(task.error, "已取消")
+
+        let reclaimed = try await store.claim(limit: 10)
+        XCTAssertTrue(reclaimed.isEmpty, "取消是终态，不能自动重新下载")
+    }
+
     func testDeleteRefusesDownloadingTask() async throws {
         let id = try await addTask("BV1")
         _ = try await store.claim(limit: 1)
@@ -223,15 +237,51 @@ final class TaskStoreTests: XCTestCase {
 
     func testMigrationIsIdempotent() throws {
         let db = try SQLiteDatabase(path: path)
-        XCTAssertEqual(db.userVersion, 1)
+        XCTAssertEqual(db.userVersion, Schema.currentVersion)
         try Schema.migrate(db)
         try Schema.migrate(db)
-        XCTAssertEqual(db.userVersion, 1)
+        XCTAssertEqual(db.userVersion, Schema.currentVersion)
+        let columns = try db.query("PRAGMA table_info(tasks);").compactMap { $0.text("name") }
+        XCTAssertTrue(columns.contains("next_retry_at"), "v2 迁移要补上重试退避列")
         // AUTOINCREMENT 会额外建 sqlite_sequence，不算业务表。
         let tables = try db.query(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
         ).compactMap { $0.text("name") }
         XCTAssertEqual(tables, ["meta", "subscriptions", "task_outputs", "tasks"])
+    }
+
+    func testRetryDelayIsExponentialAndLongerForRiskControl() {
+        XCTAssertEqual(TaskStore.retryDelay(attempt: 1, error: "boom"), 30)
+        XCTAssertEqual(TaskStore.retryDelay(attempt: 2, error: "boom"), 60)
+        XCTAssertEqual(TaskStore.retryDelay(attempt: 3, error: "boom"), 120)
+        XCTAssertEqual(TaskStore.retryDelay(attempt: 1, error: "HTTP 412 风控"), 300)
+        XCTAssertLessThanOrEqual(TaskStore.retryDelay(attempt: 99, error: "boom"), 600)
+    }
+
+    func testSentTaskIsTerminalAndNotReclaimed() async throws {
+        let id = try await addTask("BV1")
+        _ = try await store.claim(limit: 1)
+        try await store.finish(id: id, state: .sent, backend: "downie")
+        let task = try await loadTask(id)
+        XCTAssertEqual(task.state, .sent)
+        let reclaimed = try await store.claim(limit: 10)
+        XCTAssertTrue(reclaimed.isEmpty, "已交给 Downie 不该自动重下")
+    }
+
+    func testRecordFailureDoesNotReEnableManuallyDisabledSubscription() async throws {
+        let subscriptions = SubscriptionStore(database: store.database)
+        let maybeID = try await subscriptions.add(mid: 42, name: nil)
+        let id = try XCTUnwrap(maybeID)
+        try await subscriptions.setEnabled(id: id, enabled: false)
+
+        try await subscriptions.recordFailure(id: id, error: "HTTP 412", disable: false)
+        let afterOne = try await subscriptions.subscription(id: id)
+        XCTAssertFalse(afterOne?.enabled ?? true)
+
+        try await subscriptions.recordFailure(id: id, error: "HTTP 412", disable: true)
+        let afterTwo = try await subscriptions.subscription(id: id)
+        XCTAssertFalse(afterTwo?.enabled ?? true)
+        XCTAssertEqual(afterTwo?.consecutiveErrors, 2)
     }
 
     func testDatesAndOptionalsRoundTrip() async throws {
@@ -332,5 +382,39 @@ final class LegacyReaderTests: XCTestCase {
         let db = try SQLiteDatabase(path: path)
         try db.exec("CREATE TABLE other (x TEXT);")
         XCTAssertEqual(LegacyReader.completedTasks(databasePath: path), [])
+    }
+}
+
+final class PendingUndoTests: XCTestCase {
+    func testDeletePendingKeepsStartedTasks() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-undo-store-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
+        let ids = [
+            try await insert(store, "a"),
+            try await insert(store, "b"),
+            try await insert(store, "c"),
+        ]
+
+        let claimed = try await store.claim(limit: 1)
+        XCTAssertEqual(claimed.first?.id, ids[0], "claim 按 id 顺序领走第一条")
+
+        let removed = try await store.deletePending(ids: ids)
+        XCTAssertEqual(removed, 2, "已经开始下载的不能被撤销")
+        let kept = try await store.task(id: ids[0])
+        let goneB = try await store.task(id: ids[1])
+        let goneC = try await store.task(id: ids[2])
+        XCTAssertNotNil(kept)
+        XCTAssertEqual(kept?.state, .downloading)
+        XCTAssertNil(goneB)
+        XCTAssertNil(goneC)
+    }
+
+    private func insert(_ store: TaskStore, _ key: String) async throws -> Int64 {
+        let id = try await store.add(NewTask(
+            rawURL: "https://example.com/\(key)", taskKey: key, source: .manual
+        ))
+        return try XCTUnwrap(id)
     }
 }

@@ -6,8 +6,10 @@ import SwiftUI
 struct QueueScreen: View {
     @Environment(AppEnvironment.self) private var env
     @State private var state = MainWindowState.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expandedID: Int64?
     @State private var stateFilter: TaskState?
+    @State private var pendingRemoval: Int64?
 
     private var snapshot: EngineSnapshot { env.model.snapshot }
 
@@ -58,6 +60,15 @@ struct QueueScreen: View {
             } header: {
                 Text(snapshot.statusLine).font(.caption).foregroundStyle(.secondary)
             }
+
+            if snapshot.recentTruncated {
+                Section {
+                    Button("加载更多历史（当前 \(snapshot.recentLimit) 条）") {
+                        Task { await env.engine?.showMoreHistory() }
+                    }
+                    .controlSize(.small)
+                }
+            }
         }
         .listStyle(.inset)
         // 展开当前下载中的任务时，每秒刷新一次快照以显示实时日志。
@@ -71,6 +82,24 @@ struct QueueScreen: View {
         .onChange(of: state.selectedTab) { _, tab in
             if tab == .queue { Task { await env.engine?.refreshSnapshot() } }
         }
+        .confirmationDialog(
+            "从队列移除这条任务？",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("移除", role: .destructive) {
+                guard let id = pendingRemoval else { return }
+                pendingRemoval = nil
+                expandedID = nil
+                Task { await env.engine?.remove(taskID: id) }
+            }
+            Button("取消", role: .cancel) { pendingRemoval = nil }
+        } message: {
+            Text("只移除队列记录，不删除已下载的文件；去重键会释放，之后再贴同一链接会重新下载。")
+        }
     }
 
     private func chip(_ title: String, selected: Bool, count: Int, action: @escaping () -> Void) -> some View {
@@ -78,20 +107,19 @@ struct QueueScreen: View {
             Text("\(title) \(count)")
                 .font(.caption)
                 .padding(.horizontal, 9)
-                .padding(.vertical, 3)
-                .background(
-                    Capsule().fill(selected ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(0.10))
-                )
-                .overlay(Capsule().strokeBorder(selected ? Color.accentColor.opacity(0.6) : .clear))
+                .padding(.vertical, 5)
+                .frame(minHeight: 20)
+                .chipBackground(selected: selected)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func row(_ task: DownloadTask) -> some View {
         let expanded = expandedID == task.id
         return VStack(alignment: .leading, spacing: 7) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
                     expandedID = expanded ? nil : task.id
                 }
             } label: {
@@ -112,20 +140,22 @@ struct QueueScreen: View {
                     }
                     Spacer(minLength: 8)
                     Text(task.source.displayName)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.secondary.opacity(0.14)))
+                        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityValue(Text(expanded ? "已展开" : "已折叠"))
 
             if expanded {
-                detail(task).transition(.opacity)
+                detail(task).transition(reduceMotion ? .identity : .opacity)
             }
         }
         .padding(.vertical, 3)
@@ -134,7 +164,7 @@ struct QueueScreen: View {
     private func detail(_ task: DownloadTask) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(task.rawURL)
-                .font(.system(size: 11, design: .monospaced))
+                .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .lineLimit(2)
@@ -142,19 +172,19 @@ struct QueueScreen: View {
 
             if let error = task.error, !error.isEmpty {
                 Text(error)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.08)))
+                    .adaptiveTint(.red, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
 
             ForEach(task.outputs) { output in
                 HStack(spacing: 6) {
                     Image(systemName: "film").font(.caption2).foregroundStyle(.tertiary)
                     Text(output.path)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.caption.monospaced())
                         .textSelection(.enabled)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -171,11 +201,15 @@ struct QueueScreen: View {
             }
 
             HStack(spacing: 6) {
-                if task.state == .failed || task.state == .done {
+                if task.state == .sent {
+                    Button("已下载，标记完成") {
+                        Task { await env.engine?.confirm(taskID: task.id) }
+                    }
+                }
+                if task.state == .failed || task.state == .done
+                    || task.state == .cancelled || task.state == .sent {
                     Button("重新下载") {
-                        Task {
-                            await env.engine?.retry(taskID: task.id)
-                        }
+                        Task { await env.engine?.retry(taskID: task.id) }
                     }
                 }
                 if task.state == .downloading {
@@ -188,13 +222,8 @@ struct QueueScreen: View {
                     NSPasteboard.general.setString(task.rawURL, forType: .string)
                 }
                 Spacer()
-                Button("移除", role: .destructive) {
-                    Task {
-                        await env.engine?.remove(taskID: task.id)
-                        expandedID = nil
-                    }
-                }
-                .disabled(task.state == .downloading)
+                Button("移除…", role: .destructive) { pendingRemoval = task.id }
+                    .disabled(task.state == .downloading)
             }
             .controlSize(.small)
         }
@@ -204,20 +233,24 @@ struct QueueScreen: View {
     private var logView: some View {
         ScrollView {
             Text(snapshot.currentLog.suffix(120).joined(separator: "\n"))
-                .font(.system(size: 10, design: .monospaced))
+                .font(.caption2.monospaced())
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
         }
         .frame(maxHeight: 160)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
     }
 
     private func metaLine(_ task: DownloadTask) -> String {
         var parts = [task.state.displayName]
         if task.attempts > 1 { parts.append("第 \(task.attempts) 次") }
+        if let next = task.nextRetryAt, next > Date() {
+            parts.append("\(next.formatted(date: .abbreviated, time: .shortened)) 后重试")
+        }
+        if task.state == .sent { parts.append("进度请在 Downie 里查看") }
         if let owner = task.ownerName { parts.append(owner) }
-        parts.append(Self.formatter.string(from: task.updatedAt))
+        parts.append(task.updatedAt.formatted(date: .abbreviated, time: .shortened))
         return parts.joined(separator: " · ")
     }
 
@@ -227,14 +260,11 @@ struct QueueScreen: View {
         case .downloading: .accentColor
         case .done: .green
         case .failed: .red
+        case .cancelled: .secondary
+        case .sent: .orange
         }
     }
 
-    private static let formatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MM-dd HH:mm"
-        return formatter
-    }()
 }
 
 /// 手动添加链接。
@@ -245,6 +275,8 @@ struct AddLinkSheet: View {
     @State private var text = ""
     @State private var message: String?
     @State private var busy = false
+    @State private var addedIDs: [Int64] = []
+    @State private var finished = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -254,10 +286,10 @@ struct AddLinkSheet: View {
                 .foregroundStyle(.secondary)
 
             TextEditor(text: $text)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.callout.monospaced())
                 .frame(minHeight: 140)
                 .padding(6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
                 .dropDestination(for: String.self) { items, _ in
                     text += (text.isEmpty ? "" : "\n") + items.joined(separator: "\n")
                     return true
@@ -268,15 +300,23 @@ struct AddLinkSheet: View {
             }
 
             HStack {
-                Spacer()
-                Button("取消") { dismiss() }
-                Button(busy ? "添加中…" : "添加到队列") { add() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if finished {
+                    Button("撤销本次添加") { undo() }
+                        .disabled(busy)
+                    Spacer()
+                    Button("完成") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Spacer()
+                    Button("取消") { dismiss() }
+                    Button(busy ? "添加中…" : "添加到队列") { add() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             }
         }
         .padding(18)
-        .frame(width: 520)
+        .frame(minWidth: 420, idealWidth: 520)
     }
 
     private func add() {
@@ -287,15 +327,37 @@ struct AddLinkSheet: View {
         busy = true
         let input = text
         Task {
-            let added = await engine.addManual(text: input)
+            let result = await engine.addManual(text: input)
             busy = false
-            if added > 0 {
-                dismiss()
-            } else if URLExtractor.extract(from: input).isEmpty {
-                message = "没有识别到 B 站链接"
+            if let failure = result.failure {
+                message = "添加失败：\(failure)"
+            } else if result.parsed == 0 {
+                message = "没有识别到 http(s) 链接"
+            } else if result.added == 0 {
+                message = "识别到 \(result.parsed) 条链接，都已经在队列或历史里了"
             } else {
-                message = "这些链接都已经在队列或历史里了"
+                // 不再添加成功就关窗：留下明细与「撤销本次添加」，误粘贴可以一次撤回。
+                addedIDs = result.addedIDs
+                finished = true
+                message = "已新增 \(result.added) 条"
+                    + (result.duplicates > 0 ? "，另有 \(result.duplicates) 条重复已跳过" : "")
+                    + "。"
             }
+        }
+    }
+
+    private func undo() {
+        guard let engine = env.engine, !addedIDs.isEmpty else { return }
+        busy = true
+        let ids = addedIDs
+        Task {
+            let removed = await engine.undoManual(taskIDs: ids)
+            busy = false
+            addedIDs = []
+            finished = false
+            message = removed > 0
+                ? "已撤销 \(removed) 条；已经开始下载的不撤销"
+                : "没有可撤销的任务（可能已经开始下载了）"
         }
     }
 }

@@ -65,9 +65,14 @@ public actor TaskStore {
     public func claim(limit: Int) throws -> [DownloadTask] {
         guard limit > 0 else { return [] }
         let claimed: [DownloadTask] = try database.transaction {
+            // 失败任务带 next_retry_at；没到点不领，避免一轮里背靠背把 3 次重试打光。
             let rows = try database.query(
-                "SELECT * FROM tasks WHERE state = 'pending' ORDER BY id LIMIT ?;",
-                [.int(Int64(limit))]
+                """
+                SELECT * FROM tasks WHERE state = 'pending'
+                    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                ORDER BY id LIMIT ?;
+                """,
+                [.double(Date().timeIntervalSince1970), .int(Int64(limit))]
             )
             guard !rows.isEmpty else { return [] }
             let now = Date().timeIntervalSince1970
@@ -130,11 +135,34 @@ public actor TaskStore {
         }
     }
 
-    public func retryLater(id: Int64, error: String) throws {
+    /// 失败后放回 pending，但带指数退避时间戳；412/-352 风控单独拉长。
+    /// - Parameter attempt: claim 递增后的尝试次数（第一次失败传 1）。
+    public func retryLater(id: Int64, error: String, attempt: Int = 1) throws {
+        let now = Date().timeIntervalSince1970
         try database.run(
-            "UPDATE tasks SET state = 'pending', error = ?, updated_at = ? WHERE id = ?;",
-            [.text(String(error.prefix(500))), .double(Date().timeIntervalSince1970), .int(id)]
+            """
+            UPDATE tasks SET state = 'pending', error = ?, updated_at = ?, next_retry_at = ?
+            WHERE id = ?;
+            """,
+            [
+                .text(String(error.prefix(500))), .double(now),
+                .double(now + Self.retryDelay(attempt: attempt, error: error)), .int(id),
+            ]
         )
+    }
+
+    /// 清掉退避时间戳（「立即重试」与测试模拟到期用）。不动 attempts。
+    public func clearRetryDelay(id: Int64) throws {
+        try database.run(
+            "UPDATE tasks SET next_retry_at = NULL WHERE id = ?;", [.int(id)]
+        )
+    }
+
+    public static func retryDelay(attempt: Int, error: String) -> TimeInterval {
+        let riskControlled = error.contains("412") || error.contains("-352") || error.contains("风控")
+        let base: TimeInterval = riskControlled ? 300 : 30
+        let exponent = Double(min(max(attempt - 1, 0), 4))
+        return min(base * pow(2.0, exponent), riskControlled ? 1_800 : 600)
     }
 
     /// 启动时调用：把上次崩溃/强退留下的 downloading 放回 pending。
@@ -144,7 +172,8 @@ public actor TaskStore {
         guard !rows.isEmpty else { return 0 }
         try database.run(
             """
-            UPDATE tasks SET state = 'pending', error = '上次运行被中断，已重新排队', updated_at = ?
+            UPDATE tasks SET state = 'pending', error = '上次运行被中断，已重新排队',
+                updated_at = ?, next_retry_at = NULL
             WHERE state = 'downloading';
             """,
             [.double(Date().timeIntervalSince1970)]
@@ -158,7 +187,8 @@ public actor TaskStore {
     public func requeue(id: Int64) throws {
         try database.run(
             """
-            UPDATE tasks SET state = 'pending', attempts = 0, error = NULL, updated_at = ?
+            UPDATE tasks SET state = 'pending', attempts = 0, error = NULL,
+                next_retry_at = NULL, updated_at = ?
             WHERE id = ?;
             """,
             [.double(Date().timeIntervalSince1970), .int(id)]
@@ -170,6 +200,21 @@ public actor TaskStore {
         try database.run(
             "DELETE FROM tasks WHERE id = ? AND state != 'downloading';", [.int(id)]
         )
+    }
+
+    /// 撤销一次批量添加：只删仍处于 pending 的任务，已经开始下载的不能抽走。
+    /// - Returns: 实际删除的条数。
+    @discardableResult
+    public func deletePending(ids: [Int64]) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        return try database.transaction {
+            try database.run(
+                "DELETE FROM tasks WHERE id IN (\(placeholders)) AND state = 'pending';",
+                ids.map { .int($0) }
+            )
+            return Int(try database.queryOne("SELECT changes() AS n;")?.int("n") ?? 0)
+        }
     }
 
     public func forceFail(id: Int64, error: String) throws {
@@ -270,6 +315,7 @@ public actor TaskStore {
             pubdate: row.double("pubdate").map(Date.init(timeIntervalSince1970:)),
             duration: row.int("duration").map(Int.init),
             pageCount: row.int("page_count").map(Int.init),
+            nextRetryAt: row.double("next_retry_at").map(Date.init(timeIntervalSince1970:)),
             outputs: []
         )
     }

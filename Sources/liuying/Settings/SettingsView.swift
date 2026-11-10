@@ -17,7 +17,11 @@ struct SettingsView: View {
             AdvancedPane().environment(env)
                 .tabItem { Label("高级", systemImage: "wrench.and.screwdriver") }
         }
-        .frame(width: 620, height: 560)
+        // 只声明下限：写死尺寸或给 ideal/max 会让 Settings scene 把窗口锁成固定大小而拖不动。
+        // 默认尺寸、可缩放性与跨启动记忆由 Scene 的 defaultSize / windowResizability
+        // 和 SettingsWindowSizing 一起负责。
+        .frame(minWidth: 560, minHeight: 420)
+        .background(SettingsWindowSizing())
     }
 }
 
@@ -37,33 +41,34 @@ func bind<T>(_ env: AppEnvironment, _ keyPath: WritableKeyPath<AppConfig, T>) ->
 
 struct PathsPane: View {
     @Environment(AppEnvironment.self) private var env
-    @State private var launchAtLogin = LoginItem.isEnabled
-    @State private var loginError: String?
     @State private var accessStatus: PermissionProbe.Status = .ok
+    @State private var downloadDirStatus = ""
+    @State private var downloadDirIsWarning = false
 
     var body: some View {
         Form {
             Section("路径") {
-                LabeledContent("监听文件") {
-                    HStack(spacing: 6) {
-                        TextField("留空自动发现", text: bind(env, \.watchFile))
-                            .textFieldStyle(.roundedBorder)
-                        Button("选择…") { chooseFile(into: \.watchFile) }
-                        Button("自动发现") {
-                            env.configStore.update { $0.watchFile = "" }
-                            Task { await env.pushConfigToEngine() }
-                        }
-                    }
-                }
-                Text(discoveredHint).font(.caption).foregroundStyle(.secondary)
+                PathInputRow(
+                    title: "监听文件",
+                    placeholder: "留空自动发现",
+                    text: bind(env, \.watchFile),
+                    browse: .file(message: "选择快捷指令写入的 links.txt"),
+                    showAutoDiscover: true,
+                    autoDiscover: {
+                        env.configStore.update { $0.watchFile = "" }
+                        Task { await env.pushConfigToEngine() }
+                    },
+                    hint: discoveredHint
+                )
 
-                LabeledContent("下载目录") {
-                    HStack(spacing: 6) {
-                        TextField("~/Downloads/Bilibili", text: bind(env, \.downloadDir))
-                            .textFieldStyle(.roundedBorder)
-                        Button("选择…") { chooseDirectory(into: \.downloadDir) }
-                    }
-                }
+                PathInputRow(
+                    title: "下载目录",
+                    placeholder: "目录路径（可含 ~）",
+                    text: bind(env, \.downloadDir),
+                    browse: .directory,
+                    hint: downloadDirStatus,
+                    hintColor: downloadDirIsWarning ? .red : .secondary
+                )
 
                 LabeledContent("iCloud 访问") {
                     HStack(spacing: 6) {
@@ -79,45 +84,89 @@ struct PathsPane: View {
             }
 
             Section("轮询") {
-                Stepper(value: bind(env, \.pollInterval), in: 5...3600, step: 5) {
-                    Text("链接轮询间隔：\(env.configStore.config.pollInterval) 秒")
-                }
-                Stepper(value: bind(env, \.maxTasksPerRound), in: 1...100) {
-                    Text("每轮最多处理：\(env.configStore.config.maxTasksPerRound) 个")
-                }
-                Stepper(
+                StepperRow(
+                    title: "链接轮询间隔",
+                    value: bind(env, \.pollInterval),
+                    range: 5...3600,
+                    step: 5
+                ) { "\($0) 秒" }
+                StepperRow(
+                    title: "每轮最多处理",
+                    value: bind(env, \.maxTasksPerRound),
+                    range: 1...100,
+                    step: 1
+                ) { "\($0) 个" }
+                StepperRow(
+                    title: "订阅轮询间隔",
                     value: bind(env, \.subscriptionInterval),
-                    in: 60...86_400,
+                    range: 60...86_400,
                     step: 60
-                ) {
-                    Text("订阅轮询间隔：\(env.configStore.config.subscriptionInterval / 60) 分钟")
-                }
+                ) { "\($0 / 60) 分钟" }
             }
 
             Section("行为") {
-                Toggle("下载完成/失败时发送通知", isOn: bind(env, \.notify))
-                Toggle("监听剪贴板，复制 B 站链接自动入队", isOn: bind(env, \.clipboardMonitor))
+                Toggle("发送通知（新增、完成、失败、订阅异常）", isOn: bind(env, \.notify))
+                Toggle("监听剪贴板，复制任意 http(s) 链接自动入队", isOn: bind(env, \.clipboardMonitor))
+                Text("非 B 站链接会按下面的路由交给 Downie；这个开关会抓取剪贴板里的所有网址。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("登录时启动", isOn: Binding(
-                    get: { launchAtLogin },
-                    set: { value in
-                        if let error = LoginItem.setEnabled(value) {
-                            loginError = error
-                            return
-                        }
-                        launchAtLogin = value
-                        loginError = nil
-                    }
+                    get: { env.loginItem.isEnabled },
+                    set: { _ = env.loginItem.set($0) }
                 ))
-                Text(LoginItem.statusText).font(.caption).foregroundStyle(.secondary)
-                if let loginError {
+                Text(env.loginItem.statusText).font(.caption).foregroundStyle(.secondary)
+                if let loginError = env.loginItem.errorMessage {
                     Text(loginError).font(.caption).foregroundStyle(.red)
                 }
+                Toggle("在 Dock 中显示\(AppIdentity.displayName)", isOn: Binding(
+                    get: { DockVisibility.isEnabled },
+                    set: { enabled in
+                        UserDefaults.standard.set(enabled, forKey: DockVisibility.key)
+                        Task { @MainActor in
+                            let hasVisible = NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
+                            NSApp.setActivationPolicy(enabled || hasVisible ? .regular : .accessory)
+                        }
+                    }
+                ))
+                Text("菜单栏图标可能被系统隐藏；开启后可从 Dock 和主菜单进入。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("通知") {
+                LabeledContent("系统授权") {
+                    HStack(spacing: 6) {
+                        Text(Notifier.shared.state.displayText)
+                            .font(.caption)
+                            .foregroundStyle(
+                                Notifier.shared.state == .authorized ? Color.secondary : Color.orange
+                            )
+                        Button("重新检测") {
+                            Task { await Notifier.shared.refreshAuthorization() }
+                        }
+                        Button("请求授权") {
+                            Task { await Notifier.shared.requestAuthorizationIfNeeded() }
+                        }
+                        Button("打开系统设置") { Notifier.shared.openNotificationSettings() }
+                    }
+                    .controlSize(.small)
+                }
+                Text("通知开关只决定要不要发；系统侧关掉授权时这里也不会弹通知。改完系统设置后点「重新检测」。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .onAppear {
-            launchAtLogin = LoginItem.isEnabled
-            Task { await probe() }
+            env.loginItem.refresh()
+            refreshDownloadDirStatus()
+            Task {
+                await probe()
+                await Notifier.shared.refreshAuthorization()
+            }
+        }
+        .onChange(of: env.configStore.config.downloadDir) { _, _ in
+            refreshDownloadDirStatus()
         }
     }
 
@@ -129,38 +178,36 @@ struct PathsPane: View {
         return "解析为：\(AppIdentity.expand(configured))"
     }
 
+    private func refreshDownloadDirStatus() {
+        let entered = env.configStore.config.downloadDir
+        let path = env.configStore.resolvedDownloadDir
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        let resolvedNote = path != entered ? "解析为：\(path)" : nil
+        if entered.trimmingCharacters(in: .whitespaces).isEmpty {
+            downloadDirStatus = "留空将使用默认目录：\(path)"
+            downloadDirIsWarning = false
+        } else if !exists {
+            downloadDirStatus = "目录还不存在，首次下载时会自动创建：\(path)"
+            downloadDirIsWarning = false
+        } else if !isDirectory.boolValue {
+            downloadDirStatus = "这个路径是文件而不是目录：\(path)"
+            downloadDirIsWarning = true
+        } else if !FileManager.default.isWritableFile(atPath: path) {
+            downloadDirStatus = "目录不可写，请检查权限：\(path)"
+            downloadDirIsWarning = true
+        } else {
+            downloadDirStatus = resolvedNote ?? "目录存在且可写"
+            downloadDirIsWarning = false
+        }
+    }
+
     private func probe() async {
         let configured = env.configStore.config.watchFile
         let target = configured.trimmingCharacters(in: .whitespaces).isEmpty
             ? ICloudDiscovery.root
             : AppIdentity.expand(configured)
         accessStatus = await PermissionProbe.probeGuarded(path: target)
-    }
-
-    private func chooseFile(into keyPath: WritableKeyPath<AppConfig, String>) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "选择"
-        panel.message = "选择快捷指令写入的 links.txt"
-        if panel.runModal() == .OK, let url = panel.url {
-            env.configStore.update { $0[keyPath: keyPath] = url.path }
-            Task { await env.pushConfigToEngine() }
-        }
-    }
-
-    private func chooseDirectory(into keyPath: WritableKeyPath<AppConfig, String>) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "选择"
-        if panel.runModal() == .OK, let url = panel.url {
-            env.configStore.update { $0[keyPath: keyPath] = url.path }
-            Task { await env.pushConfigToEngine() }
-        }
     }
 }
 
@@ -174,41 +221,55 @@ struct YuttoPane: View {
     var body: some View {
         Form {
             Section("可执行文件") {
-                LabeledContent("yutto") {
-                    HStack(spacing: 6) {
-                        TextField("yutto 或绝对路径", text: bind(env, \.yutto.binary))
-                            .textFieldStyle(.roundedBorder)
-                        Button("选择…") { chooseExecutable() }
-                    }
-                }
+                PathInputRow(
+                    title: "yutto",
+                    placeholder: "yutto 或绝对路径",
+                    text: bind(env, \.yutto.binary),
+                    browse: .file(message: "选择 yutto 可执行文件")
+                )
                 let resolved = Subprocess.lookupOnPATH(env.configStore.config.yutto.binary)
-                Text(resolved.map { "解析为：\($0)" } ?? "⚠️ 找不到这个可执行文件")
+                Text(resolved.map { "解析为：\($0)" } ?? "找不到这个可执行文件")
                     .font(.caption)
                     .foregroundStyle(resolved == nil ? Color.red : Color.secondary)
             }
 
             Section("画质与编码") {
-                Picker("视频画质上限", selection: bind(env, \.yutto.videoQuality)) {
-                    ForEach(YuttoQuality.videoOptions, id: \.value) { option in
-                        Text("\(option.value) · \(option.label)").tag(option.value)
+                LabeledPicker(
+                    title: "视频画质上限",
+                    selection: bind(env, \.yutto.videoQuality),
+                    options: YuttoQuality.videoOptions.map {
+                        PickerOption(id: $0.value, label: "\($0.value) · \($0.label)")
                     }
-                }
-                Picker("音频码率", selection: bind(env, \.yutto.audioQuality)) {
-                    ForEach(YuttoQuality.audioOptions, id: \.value) { option in
-                        Text("\(option.value) · \(option.label)").tag(option.value)
+                )
+                LabeledPicker(
+                    title: "音频码率",
+                    selection: bind(env, \.yutto.audioQuality),
+                    options: YuttoQuality.audioOptions.map {
+                        PickerOption(id: $0.value, label: "\($0.value) · \($0.label)")
                     }
-                }
-                TextField("vcodec（下载:保存）", text: bind(env, \.yutto.vcodec))
-                LabeledContent("编码优先级") {
-                    TextField("av1,hevc,avc", text: $priorityText)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { commitPriority() }
-                }
-                Text("必须包含全部三种，否则未列出的编码永远不会被选中").font(.caption).foregroundStyle(.secondary)
-                Picker("yutto 输出格式", selection: bind(env, \.yutto.outputFormat)) {
-                    ForEach(YuttoQuality.outputFormats, id: \.self) { Text($0).tag($0) }
-                }
-                TextField("目录模板", text: bind(env, \.yutto.subpathTemplate))
+                )
+                LabeledTextField(
+                    title: "vcodec（下载:保存）",
+                    placeholder: "下载:保存",
+                    text: bind(env, \.yutto.vcodec)
+                )
+                LabeledTextField(
+                    title: "编码优先级",
+                    placeholder: "av1,hevc,avc",
+                    text: $priorityText,
+                    hint: "必须包含全部三种，否则未列出的编码永远不会被选中",
+                    onSubmit: commitPriority
+                )
+                LabeledPicker(
+                    title: "yutto 输出格式",
+                    selection: bind(env, \.yutto.outputFormat),
+                    options: YuttoQuality.outputFormats.map { PickerOption(id: $0, label: $0) }
+                )
+                LabeledTextField(
+                    title: "目录模板",
+                    placeholder: "例如 {owner}/{title}",
+                    text: bind(env, \.yutto.subpathTemplate)
+                )
             }
 
             Section("资源") {
@@ -219,18 +280,24 @@ struct YuttoPane: View {
             }
 
             Section("登录态") {
-                LabeledContent("auth.toml") {
-                    HStack(spacing: 6) {
-                        TextField("~/.config/yutto/auth.toml", text: bind(env, \.yutto.authFile))
-                            .textFieldStyle(.roundedBorder)
-                        Button("选择…") { chooseAuthFile() }
-                    }
-                }
-                TextField("profile", text: bind(env, \.yutto.authProfile))
+                PathInputRow(
+                    title: "auth.toml",
+                    placeholder: "auth.toml 路径（可含 ~）",
+                    text: bind(env, \.yutto.authFile),
+                    browse: .file(message: "选择 yutto 的 auth.toml")
+                )
+                LabeledTextField(
+                    title: "profile",
+                    placeholder: "默认 profile 名",
+                    text: bind(env, \.yutto.authProfile)
+                )
                 let exists = AuthFile.exists(path: env.configStore.config.yutto.authFile)
-                Text(exists ? "✅ 文件存在，会带上 --auth-file" : "⚠️ 文件不存在，将退化为未登录（最高 1080P）")
-                    .font(.caption)
-                    .foregroundStyle(exists ? Color.secondary : Color.red)
+                Label(
+                    exists ? "文件存在，会带上 --auth-file" : "文件不存在，将退化为未登录（最高 1080P）",
+                    systemImage: exists ? "checkmark.circle" : "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(exists ? Color.secondary : Color.red)
             }
 
             Section("容器规整") {
@@ -238,28 +305,34 @@ struct YuttoPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(["av1", "hevc", "avc"], id: \.self) { codec in
-                    Picker(codec, selection: Binding(
-                        get: { env.configStore.config.yutto.outputContainers[codec] ?? "mkv" },
-                        set: { newValue in
-                            env.configStore.update { $0.yutto.outputContainers[codec] = newValue }
-                            Task { await env.pushConfigToEngine() }
-                        }
-                    )) {
-                        ForEach(YuttoQuality.containers, id: \.self) { Text($0).tag($0) }
-                    }
+                    LabeledPicker(
+                        title: codec,
+                        selection: Binding(
+                            get: { env.configStore.config.yutto.outputContainers[codec] ?? "mkv" },
+                            set: { newValue in
+                                env.configStore.update { $0.yutto.outputContainers[codec] = newValue }
+                                Task { await env.pushConfigToEngine() }
+                            }
+                        ),
+                        options: YuttoQuality.containers.map { PickerOption(id: $0, label: $0) }
+                    )
                 }
             }
 
             Section("其它") {
-                LabeledContent("追加参数") {
-                    TextField("--proxy auto", text: $extraArgsText)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { commitExtraArgs() }
-                }
-                Text("原样追加到 yutto 命令末尾").font(.caption).foregroundStyle(.secondary)
-                Stepper(value: bind(env, \.yuttoTimeout), in: 60...86_400, step: 60) {
-                    Text("单次下载超时：\(env.configStore.config.yuttoTimeout / 60) 分钟")
-                }
+                LabeledTextField(
+                    title: "追加参数",
+                    placeholder: "--proxy auto",
+                    text: $extraArgsText,
+                    hint: "原样追加到 yutto 命令末尾",
+                    onSubmit: commitExtraArgs
+                )
+                StepperRow(
+                    title: "单次下载超时",
+                    value: bind(env, \.yuttoTimeout),
+                    range: 60...86_400,
+                    step: 60
+                ) { "\($0 / 60) 分钟" }
             }
         }
         .formStyle(.grouped)
@@ -286,29 +359,6 @@ struct YuttoPane: View {
         }
         env.configStore.update { $0.yutto.extraArgs = words }
         Task { await env.pushConfigToEngine() }
-    }
-
-    private func chooseExecutable() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.prompt = "选择"
-        if panel.runModal() == .OK, let url = panel.url {
-            env.configStore.update { $0.yutto.binary = url.path }
-            Task { await env.pushConfigToEngine() }
-        }
-    }
-
-    private func chooseAuthFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.prompt = "选择"
-        panel.message = "选择 yutto 的 auth.toml"
-        if panel.runModal() == .OK, let url = panel.url {
-            env.configStore.update { $0.yutto.authFile = url.path }
-            Task { await env.pushConfigToEngine() }
-        }
     }
 }
 
@@ -345,32 +395,27 @@ struct DowniePane: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                Text("B 站主机（b23.tv / bilibili.com / bilibili.tv）走第一个；其余 http(s) 链接走第二个 —— yutto 只认 B 站。路由在入队时确定，下载过程中不会换后端。")
+                Text("B 站主机（b23.tv / bilibili.com / bilibili.tv）走第一个；其余 http(s) 链接走第二个 —— yutto 只认 B 站。后端在任务开始下载时按当前设置选择，排队中的任务改设置后会跟着换。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Section("Downie") {
-                TextField("应用名", text: bind(env, \.downie.appName))
-                Picker("后处理", selection: bind(env, \.downie.postprocessing)) {
-                    ForEach(YuttoQuality.downiePostprocessing, id: \.self) { Text($0).tag($0) }
-                }
-                LabeledContent("目标目录") {
-                    HStack(spacing: 6) {
-                        TextField("留空用下载目录", text: bind(env, \.downie.destination))
-                            .textFieldStyle(.roundedBorder)
-                        Button("选择…") {
-                            let panel = NSOpenPanel()
-                            panel.canChooseFiles = false
-                            panel.canChooseDirectories = true
-                            panel.canCreateDirectories = true
-                            panel.prompt = "选择"
-                            if panel.runModal() == .OK, let url = panel.url {
-                                env.configStore.update { $0.downie.destination = url.path }
-                                Task { await env.pushConfigToEngine() }
-                            }
-                        }
-                    }
-                }
+                LabeledTextField(
+                    title: "应用名",
+                    placeholder: "如 Downie 4",
+                    text: bind(env, \.downie.appName)
+                )
+                LabeledPicker(
+                    title: "后处理",
+                    selection: bind(env, \.downie.postprocessing),
+                    options: YuttoQuality.downiePostprocessing.map { PickerOption(id: $0, label: $0) }
+                )
+                PathInputRow(
+                    title: "目标目录",
+                    placeholder: "留空用下载目录",
+                    text: bind(env, \.downie.destination),
+                    browse: .directory
+                )
             }
         }
         .formStyle(.grouped)

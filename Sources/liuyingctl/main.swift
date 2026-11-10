@@ -238,7 +238,7 @@ func downloadTest(_ url: String, extra: [String] = []) async {
     print("路由后端: \(config.backend(for: url).displayName)（B 站？\(URLExtractor.isBilibiliHost(url) ? "是" : "否")）")
     print("下载目录: \(downloadDir)")
     print("工作目录: \(workDir)")
-    print("BV      : \(CanonicalKey.localKey(url) ?? "（未能解析，可能是短链）")")
+    print("BV      : \(CanonicalKey.videoID(in: url) ?? "（未能解析，可能是短链）")")
     if !extra.isEmpty { print("附加参数: \(extra.joined(separator: " "))") }
 
     if config.backend(for: url) == .yutto, let binary = Subprocess.lookupOnPATH(yuttoConfig.binary) {

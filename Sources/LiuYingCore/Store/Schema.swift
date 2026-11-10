@@ -2,10 +2,16 @@ import Foundation
 
 /// schema 版本化。`PRAGMA user_version` 门控，迁移按序执行。
 public enum Schema {
-    public static let currentVersion: Int32 = 1
+    public static let currentVersion: Int32 = 2
 
     /// 下标 0 对应版本 1。
-    static let migrations: [String] = [v1]
+    static let migrations: [String] = [v1, v2]
+
+    /// v2：失败重试的退避时间戳。旧库升级用 ALTER TABLE，新库先走 v1 再补列。
+    /// `claim` 只领取 next_retry_at 为空或已到点的 pending 任务。
+    static let v2 = """
+    ALTER TABLE tasks ADD COLUMN next_retry_at REAL;
+    """
 
     static let v1 = """
     CREATE TABLE IF NOT EXISTS tasks (

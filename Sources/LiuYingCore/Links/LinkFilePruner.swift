@@ -22,6 +22,8 @@ public enum LinkFilePruner {
         public var backupPath: String?
         /// 未执行时的原因（给 UI / 日志看）。
         public var reason: String?
+        /// 文件里本来就没有这些链接：不是失败，调用方应清掉待清理键而不是累加失败次数。
+        public var nothingMatched: Bool = false
     }
 
     private struct Signature: Equatable {
@@ -79,7 +81,10 @@ public enum LinkFilePruner {
             previews: outcome.previews
         )
         guard outcome.changed else {
-            return ApplyResult(applied: false, preview: preview, backupPath: nil, reason: "没有匹配到要删除的链接")
+            return ApplyResult(
+                applied: false, preview: preview, backupPath: nil,
+                reason: "没有匹配到要删除的链接", nothingMatched: true
+            )
         }
 
         // iPhone 可能在读取期间追加了一行；这时重写会把新内容吞掉，直接放弃本轮。
@@ -96,7 +101,10 @@ public enum LinkFilePruner {
         }
 
         let directory = (path as NSString).deletingLastPathComponent
-        let temporary = (directory as NSString).appendingPathComponent(".links.txt.liuying-tmp")
+        // 临时名必须唯一：固定名会让两个清理动作（自动 + 手动）互相删掉对方的待替换文件。
+        let temporary = (directory as NSString).appendingPathComponent(
+            ".links.txt.liuying-\(UUID().uuidString).tmp"
+        )
         let fm = FileManager.default
         do {
             try fm.removeItemIfExists(atPath: temporary)
@@ -132,7 +140,8 @@ public enum LinkFilePruner {
             try fm.createDirectory(atPath: directory, withIntermediateDirectories: true)
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyyMMdd-HHmmss"
-            let name = "links-\(formatter.string(from: Date())).txt"
+            // 同一秒里连做两次清理不能互相覆盖备份。
+            let name = "links-\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(8)).txt"
             let target = (directory as NSString).appendingPathComponent(name)
             try Data(text.utf8).write(to: URL(fileURLWithPath: target))
             Log.info("已备份 \(sourcePath) → \(target)")

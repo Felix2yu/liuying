@@ -56,7 +56,7 @@ public actor ICloudLinkSource {
     public private(set) var currentPath: String
     public private(set) var lastStatus: Status
 
-    private let configuredPath: String
+    private var configuredPath: String
     private var lastSignature: Signature?
     private var lastBroadAttempt: Date?
     private var discoveryNeeded: Bool
@@ -82,17 +82,24 @@ public actor ICloudLinkSource {
         }
     }
 
-    public func reconfigure(configuredPath: String) {
-        let trimmed = configuredPath.trimmingCharacters(in: .whitespaces)
-        guard trimmed != configuredPath else { return }
+    /// 配置热更新：必须与「上一次保存的值」比较，不能拿形参 trim 后跟形参原值比
+    /// （后者恒相等，会让设置里的路径改动永远不生效）。
+    public func reconfigure(configuredPath newPath: String) {
+        let trimmed = newPath.trimmingCharacters(in: .whitespaces)
+        guard trimmed != self.configuredPath else { return }
+        self.configuredPath = trimmed
         if trimmed.isEmpty {
             currentPath = ICloudDiscovery.placeholderPath
             discoveryNeeded = true
+            lastStatus = .autoDiscovering(path: ICloudDiscovery.placeholderPath)
         } else {
             currentPath = AppIdentity.expand(trimmed)
             discoveryNeeded = false
+            lastStatus = .ok(path: currentPath)
         }
         lastSignature = nil
+        lastBroadAttempt = nil
+        suspendedUntil = nil
     }
 
     // MARK: - 采集
@@ -122,13 +129,13 @@ public actor ICloudLinkSource {
         case .missing:
             if let found = await discover() {
                 adopt(found)
-                return await collectFromCurrentPath()
+                return await collectFromCurrentPath(preReadSignature: nil)
             }
             await diagnoseMissing()
             return []
         case .ok(let signature):
             if signature == lastSignature { return [] }
-            return await collectFromCurrentPath()
+            return await collectFromCurrentPath(preReadSignature: signature)
         }
     }
 
@@ -139,12 +146,15 @@ public actor ICloudLinkSource {
         Log.warning("\(reason)；\(Int(Self.suspendDuration / 60)) 分钟后重试。路径：\(currentPath)")
     }
 
-    private func collectFromCurrentPath() async -> [String] {
+    private func collectFromCurrentPath(preReadSignature: Signature?) async -> [String] {
         switch await DeadlinedRead.text(at: currentPath, timeout: Self.readTimeout) {
         case .success(let text):
             lastStatus = .ok(path: currentPath)
             suspendedUntil = nil
-            lastSignature = await signature()
+            // 提交「读取前」的签名：若 iPhone 恰好在读取期间追加了一行，
+            // 下一轮 stat 会看到变化并重新采集，不会把新行静默吞掉。
+            // 拿不到读取前签名时留 nil，强制下一轮重读（DB 去重兜底）。
+            lastSignature = preReadSignature
             let urls = URLExtractor.extract(from: text)
             if !urls.isEmpty {
                 Log.info("采集到 \(urls.count) 条链接（\(currentPath)）")

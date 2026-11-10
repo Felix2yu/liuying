@@ -16,6 +16,12 @@ public struct EngineSnapshot: Sendable, Equatable {
     public var pendingPruneCount = 0
     public var pruneFailure: String?
     public var recent: [DownloadTask] = []
+    /// 快照里最多带多少条历史；队列页可「加载更多」把它抬高。
+    public var recentLimit = 30
+    /// 是否还有没装进快照的更旧任务。
+    public var recentTruncated = false
+    /// 每次有任务确认完成就 +1；视频库据此主动失效缓存并重新扫描。
+    public var libraryRevision = 0
 
     public var pendingCount: Int { stats[.pending] ?? 0 }
     public var downloadingCount: Int { stats[.downloading] ?? 0 }

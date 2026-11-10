@@ -5,39 +5,71 @@ import Foundation
 ///
 /// 完全以文件系统为真相：旧版状态库的 `out_path` 有空值、也有指向 /private/tmp 的陈旧测试路径，
 /// 所以这里不读数据库。
+public enum LibraryScanError: Error, Sendable, Equatable {
+    case timeout(String)
+    case unreadable(String)
+
+    public var message: String {
+        switch self {
+        case .timeout(let path):
+            "扫描下载目录超时，可能没有文件访问权限：\(path)"
+        case .unreadable(let path):
+            "无法读取下载目录：\(path)"
+        }
+    }
+}
+
+public struct LibraryScanOutcome: Sendable {
+    public var items: [LibraryVideo]
+    public var error: LibraryScanError?
+}
+
 public actor LibraryScanner {
-    private var cache: [String: (stamp: Date, items: [LibraryVideo])] = [:]
+    private var cache: [String: (stamp: String, items: [LibraryVideo])] = [:]
 
     public init() {}
 
-    /// 带死线的扫描。`~/Downloads` 在 TCC 待授权时枚举会无限阻塞，UI 不能干等。
-    public func scan(root: String, timeout: TimeInterval = 20) async -> [LibraryVideo] {
+    /// 带死线的扫描，区分「确实是空库」和「没读成」。
+    /// `~/Downloads` 在 TCC 待授权时枚举会无限阻塞，UI 不能干等，更不能把超时显示成空库。
+    public func scanChecked(root: String, timeout: TimeInterval = 20) async -> LibraryScanOutcome {
         let standardizedRoot = (root as NSString).standardizingPath
         let stamp = directoryStamp(standardizedRoot)
         if let cached = cache[standardizedRoot], cached.stamp == stamp {
-            return cached.items
+            return LibraryScanOutcome(items: cached.items, error: nil)
         }
 
-        let scanned = await GuardedFS.value(timeout: timeout) {
+        let wrapped: [LibraryVideo]?? = await GuardedFS.value(timeout: timeout) {
             Self.scanSync(root: standardizedRoot)
-        } ?? nil
-        guard let items = scanned else {
+        }
+        guard let scanned = wrapped else {
             Log.warning("扫描下载目录超时（可能缺少文件访问权限）：\(standardizedRoot)")
-            return []
+            return LibraryScanOutcome(items: [], error: .timeout(standardizedRoot))
+        }
+        guard let items = scanned else {
+            Log.warning("无法枚举下载目录：\(standardizedRoot)")
+            // 失败绝不写缓存，否则下次会一直复用这份「空库」。
+            return LibraryScanOutcome(items: [], error: .unreadable(standardizedRoot))
         }
 
         cache[standardizedRoot] = (stamp, items)
-        return items
+        return LibraryScanOutcome(items: items, error: nil)
     }
 
-    static func scanSync(root standardizedRoot: String) -> [LibraryVideo] {
+    /// 兼容旧调用方；需要错误态时用 `scanChecked`。
+    public func scan(root: String, timeout: TimeInterval = 20) async -> [LibraryVideo] {
+        await scanChecked(root: root, timeout: timeout).items
+    }
+
+    /// 返回 nil 表示目录不可枚举（区别于「枚举成功但没有视频」）。
+    static func scanSync(root standardizedRoot: String) -> [LibraryVideo]? {
         let url = URL(fileURLWithPath: standardizedRoot, isDirectory: true)
-        guard let enumerator = FileManager.default.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            return []
+        guard FileManager.default.fileExists(atPath: standardizedRoot),
+              let enumerator = FileManager.default.enumerator(
+                  at: url,
+                  includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+                  options: [.skipsHiddenFiles, .skipsPackageDescendants]
+              ) else {
+            return nil
         }
         var items: [LibraryVideo] = []
         for case let fileURL as URL in enumerator {
@@ -60,9 +92,26 @@ public actor LibraryScanner {
         cache.removeAll()
     }
 
-    /// 目录 mtime 作为廉价失效信号；下载完成后引擎会主动 invalidate 兜底。
-    private func directoryStamp(_ path: String) -> Date {
-        (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+    /// 廉价失效信号：根目录 + 一级子目录的 mtime。
+    /// subpath_template 会把视频放进 `{owner}/{title}/`，只盯根目录 mtime 会漏掉
+    /// 已有 UP 主目录下的新投稿；下载完成时引擎还会通过 libraryRevision 主动 invalidate。
+    private func directoryStamp(_ path: String) -> String {
+        let fm = FileManager.default
+        func modified(_ target: String) -> String {
+            guard let attributes = try? fm.attributesOfItem(atPath: target),
+                  let date = attributes[.modificationDate] as? Date else { return "missing" }
+            return String(date.timeIntervalSince1970)
+        }
+        var parts = [modified(path)]
+        for name in ((try? fm.contentsOfDirectory(atPath: path)) ?? []).sorted() {
+            let child = (path as NSString).appendingPathComponent(name)
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: child, isDirectory: &isDirectory), isDirectory.boolValue else {
+                continue
+            }
+            parts.append("\(name):\(modified(child))")
+        }
+        return parts.joined(separator: "|")
     }
 }
 

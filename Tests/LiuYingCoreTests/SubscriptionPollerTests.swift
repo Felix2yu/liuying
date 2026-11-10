@@ -229,6 +229,31 @@ final class SubscriptionPollerTests: XCTestCase {
         XCTAssertEqual(keys, ["BV1a", "BV1b"])
     }
 
+    /// 回归：旧实现用整页最新时间推进水位，会把未导入但更新的稿件永久挡在增量轮询之外。
+    func testImportRecentDoesNotSkipNewerUnimportedVideos() async throws {
+        let id = try await addSubscription()
+        // 故意乱序：第 3 条比前 2 条都新，但只导入前 2 条。
+        installServer(videos: [
+            ("BV1a", "A", 1_758_000_000),
+            ("BV1b", "B", 1_759_000_000),
+            ("BV1c", "C", 1_760_000_000),
+        ])
+        let added = await poller.importRecent(subscriptionID: id, count: 2)
+        XCTAssertEqual(added, 2)
+
+        let subscription = try await loadSubscription(id)
+        let importedDates = try await taskStore.recent(limit: 10).compactMap(\.pubdate)
+        XCTAssertEqual(
+            subscription.watermark, importedDates.max(),
+            "水位只能推进到本次真正入队的最新一条"
+        )
+
+        // 下一轮增量轮询必须还能抓到 BV1c。
+        _ = await poller.pollNow(subscriptionID: id)
+        let keys = try await taskStore.knownKeys()
+        XCTAssertTrue(keys.contains("BV1c"), "未导入的新稿不能被水位挡住")
+    }
+
     // MARK: - 熔断
 
     func testThreeConsecutiveFailuresDisableSubscription() async throws {

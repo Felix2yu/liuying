@@ -33,6 +33,12 @@ public enum ContainerFinalizer {
 
         let base = (path as NSString).deletingPathExtension
         let destination = base + "." + target
+        // remux 用的 -y 会静默覆盖同名文件。下载目录是共享的（Downie、手工文件、
+        // 上一次下载），绝不能让一次规整把已有视频整个替换掉再删源。
+        guard !FileManager.default.fileExists(atPath: destination) else {
+            Log.warning("容器规整跳过：目标已存在，拒绝覆盖 \(destination)")
+            return path
+        }
         let arguments = ContainerPolicy.remuxArguments(
             source: path,
             destination: destination,

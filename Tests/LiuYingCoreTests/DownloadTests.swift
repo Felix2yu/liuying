@@ -64,9 +64,9 @@ final class FileSnapshotTests: XCTestCase {
         XCTAssertEqual(new, new.sorted())
     }
 
-    func testMissingDirectoryYieldsEmptySnapshot() async throws {
-        let snapshot = try await snapshot(root + "/does-not-exist")
-        XCTAssertEqual(snapshot.files.count, 0)
+    func testMissingDirectoryIsAFailureNotAnEmptySnapshot() async throws {
+        let value = await FileSnapshot.capture(root: root + "/does-not-exist")
+        XCTAssertNil(value, "目录不存在/不可读必须返回 nil，不能被当成「没有新文件」")
     }
 
     func testEmptyDiffWhenNothingChanged() async throws {

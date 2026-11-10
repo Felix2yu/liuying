@@ -33,6 +33,39 @@ final class WindowRouter {
     }
 }
 
+/// 登录项状态的唯一可观察来源。
+/// 菜单、设置、引导页以前各持一份 @State，一边改了另一边不知道，系统侧改动也不会刷新。
+@MainActor
+@Observable
+final class LoginItemState {
+    private(set) var isEnabled: Bool
+    private(set) var statusText: String
+    var errorMessage: String?
+
+    init() {
+        isEnabled = LoginItem.isEnabled
+        statusText = LoginItem.statusText
+    }
+
+    func refresh() {
+        isEnabled = LoginItem.isEnabled
+        statusText = LoginItem.statusText
+    }
+
+    /// - Returns: 是否设置成功；失败时 errorMessage 给用户看。
+    @discardableResult
+    func set(_ enabled: Bool) -> Bool {
+        if let error = LoginItem.setEnabled(enabled) {
+            errorMessage = error
+            refresh()
+            return false
+        }
+        errorMessage = nil
+        refresh()
+        return true
+    }
+}
+
 /// 全局依赖容器。App 与菜单栏共享同一份。
 @MainActor
 @Observable
@@ -41,17 +74,32 @@ final class AppEnvironment {
 
     let configStore: ConfigStore
     let model = EngineModel()
+    let loginItem = LoginItemState()
     private(set) var taskStore: TaskStore?
     private(set) var engine: Engine?
     private(set) var subscriptions: SubscriptionService?
     var startupError: String?
     var isBootstrapped = false
+    /// bootstrap 只允许真正跑一次。用保存的 Task 串行化并发调用，避免起两个 Engine。
+    private var bootstrapTask: Task<Void, Never>?
 
     private init() {
         self.configStore = ConfigStore()
     }
 
+    /// 两个入口（AppDelegate 的 applicationDidFinishLaunching 与主窗口 .task）都会调，
+    /// 必须在任何 await 之前占位，否则两边同时通过 guard，会起两个 Engine。
     func bootstrap() async {
+        if let existing = bootstrapTask {
+            await existing.value
+            return
+        }
+        let task = Task { await self.performBootstrap() }
+        bootstrapTask = task
+        await task.value
+    }
+
+    private func performBootstrap() async {
         guard !isBootstrapped else { return }
         do {
             try AppIdentity.ensureDirectories()
@@ -60,18 +108,24 @@ final class AppEnvironment {
             if recovered > 0 { Log.warning("上次有 \(recovered) 个任务被中断，已重新排队") }
 
             let subscriptionStore = SubscriptionStore(database: store.database)
+            // 引擎与订阅轮询器必须共用同一个 client：两个实例时改 SESSDATA 只更新其中一个，
+            // 订阅仍拿旧凭据请求，被 412 风控后累计失败熔断。
+            let sharedBiliClient = BiliClient(sessdata: Engine.resolveSessdata(configStore.config))
             let poller = SubscriptionPoller(
                 store: subscriptionStore,
                 taskStore: store,
-                client: BiliClient(sessdata: Engine.resolveSessdata(configStore.config)),
+                client: sharedBiliClient,
                 notifier: NotificationBridge()
             )
+            // 初始配置也要同步：Engine 自己读 config.notify，但 poller 是独立实例。
+            await poller.setNotifyEnabled(configStore.config.notify)
 
             let engine = Engine(
                 store: store,
                 config: configStore.config,
                 notifier: NotificationBridge(),
-                subscriptionPoller: poller
+                subscriptionPoller: poller,
+                biliClient: sharedBiliClient
             )
             let model = self.model
             await engine.setSnapshotSink { snapshot in
@@ -99,6 +153,8 @@ final class AppEnvironment {
         } catch {
             startupError = error.localizedDescription
             Log.error("启动失败：\(error)")
+            // 允许后续入口重试，而不是永远卡在失败的 bootstrapTask 上。
+            bootstrapTask = nil
         }
     }
 
@@ -113,7 +169,9 @@ final class AppEnvironment {
         await engine.refreshSnapshot()
     }
 
-    func setNotifierAuthorized() async {
-        await Notifier.shared.requestAuthorizationIfNeeded()
+    /// 恢复默认设置并立刻同步给引擎。调用方负责先弹确认框。
+    func resetConfig() async {
+        configStore.resetToDefaults()
+        await pushConfigToEngine()
     }
 }

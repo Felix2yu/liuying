@@ -172,7 +172,8 @@ public struct AppConfig: Codable, Sendable, Equatable {
     }
 
     /// 按链接选后端：B 站四个主机之外的一切 URL 都归 downie。
-    /// 这是**路由**，不是「yutto 失败后回退」——后端在入队时就定了，下载过程中不会换。
+    /// 这是**路由**，不是「yutto 失败后回退」——后端在任务开始下载时按当前配置选定，
+    /// 入队后没有单独持久化，排队中的任务改设置会跟着换。
     public func backend(for url: String) -> BackendKind {
         URLExtractor.isBilibiliHost(url) ? bilibiliBackend : otherBackend
     }

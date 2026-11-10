@@ -7,6 +7,9 @@ struct OnboardingView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
 
+    /// 只有点了「开始使用」并成功才置 true；「稍后设置」不改它。
+    @Binding var didFinish: Bool
+
     @State private var legacyStatus: LegacyService.Status?
     @State private var retireLegacy = true
     @State private var enableLogin = true
@@ -103,15 +106,18 @@ struct OnboardingView: View {
             }
 
             HStack {
-                Button("稍后设置") { finish(skipLegacy: true) }
-                Spacer()
-                Button(working ? "处理中…" : "开始使用") { finish(skipLegacy: false) }
-                    .keyboardShortcut(.defaultAction)
+                Button("稍后设置") { skip() }
                     .disabled(working)
+                Spacer()
+                Button(working ? "处理中…" : (legacyStatus == nil ? "检查旧服务中…" : "开始使用")) {
+                    start()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(working || legacyStatus == nil)
             }
         }
         .padding(20)
-        .frame(width: 560)
+        .frame(minWidth: 480, idealWidth: 560)
         .task {
             await probe()
             legacyStatus = await LegacyService.status()
@@ -125,6 +131,7 @@ struct OnboardingView: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(ok ? Color.green : Color.orange)
+                .accessibilityLabel(Text(ok ? "已就绪" : "需要处理"))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.callout)
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -141,21 +148,29 @@ struct OnboardingView: View {
         accessStatus = await PermissionProbe.probeGuarded(path: target)
     }
 
-    private func finish(skipLegacy: Bool) {
+    /// 「稍后设置」= 什么都不改：不启用登录项、不动旧服务、也不标记引导完成。
+    private func skip() {
+        dismiss()
+    }
+
+    /// 旧服务状态还在异步加载时不允许开始，否则会静默跳过退役，
+    /// 留下新旧两个进程同时轮询同一个 links.txt。
+    private func start() {
+        guard legacyStatus != nil, !working else { return }
         working = true
         Task {
             var notes: [String] = []
-            if enableLogin, let error = LoginItem.setEnabled(true) {
+            if enableLogin, !env.loginItem.set(true), let error = env.loginItem.errorMessage {
                 notes.append(error)
             }
-            if !skipLegacy, retireLegacy,
-               let status = legacyStatus, status.needsRetire {
+            if retireLegacy, let status = legacyStatus, status.needsRetire {
                 let result = await LegacyService.retire()
                 notes.append(result.message)
             }
             await env.engine?.start()
             await env.engine?.tickNow()
             if notes.isEmpty {
+                didFinish = true
                 dismiss()
             } else {
                 summary = notes.joined(separator: "；")

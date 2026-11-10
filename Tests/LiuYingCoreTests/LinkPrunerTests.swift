@@ -54,6 +54,7 @@ final class LinkFilePrunerTests: XCTestCase {
             path: file, consumed: ["BV1p8nh61Efm"], backupDirectory: backups
         )
         XCTAssertFalse(result.applied)
+        XCTAssertTrue(result.nothingMatched, "文件里没有这些链接是正常 no-op，不能算清理失败")
         XCTAssertEqual(try read(), text)
         let after = try FileManager.default.attributesOfItem(atPath: file)
         XCTAssertEqual(before[.modificationDate] as? Date, after[.modificationDate] as? Date)
@@ -63,6 +64,7 @@ final class LinkFilePrunerTests: XCTestCase {
         try write("anything\n")
         let result = await LinkFilePruner.apply(path: file, consumed: [], backupDirectory: nil)
         XCTAssertFalse(result.applied)
+        XCTAssertFalse(result.nothingMatched, "空待清理集合是另一种 no-op，不要与「无匹配」混淆")
         XCTAssertEqual(try read(), "anything\n")
     }
 
@@ -123,6 +125,6 @@ final class LinkFilePrunerTests: XCTestCase {
         try write("https://www.bilibili.com/video/BV1GJ411x7h7\n")
         _ = await LinkFilePruner.apply(path: file, consumed: ["BV1GJ411x7h7"], backupDirectory: nil)
         let entries = try FileManager.default.contentsOfDirectory(atPath: directory)
-        XCTAssertFalse(entries.contains { $0.hasPrefix(".links.txt.liuying-tmp") })
+        XCTAssertFalse(entries.contains { $0.hasPrefix(".links.txt.liuying") }, "清理后不能留下任何临时文件")
     }
 }

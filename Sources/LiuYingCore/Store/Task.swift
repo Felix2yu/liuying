@@ -5,6 +5,11 @@ public enum TaskState: String, Codable, Sendable, CaseIterable {
     case downloading
     case done
     case failed
+    /// 用户主动取消。终态，不再被 claim 自动重跑；可用「重新下载」显式 requeue。
+    case cancelled
+    /// 已交给 Downie 等外部应用，脚本侧无法确认完成。
+    /// 不算 done，用户确认后才转 done；期间不删 links.txt、不自动重试。
+    case sent
 
     public var displayName: String {
         switch self {
@@ -12,6 +17,8 @@ public enum TaskState: String, Codable, Sendable, CaseIterable {
         case .downloading: "下载中"
         case .done: "已完成"
         case .failed: "失败"
+        case .cancelled: "已取消"
+        case .sent: "已交给 Downie"
         }
     }
 }
@@ -69,6 +76,8 @@ public struct DownloadTask: Sendable, Identifiable, Equatable {
     public var pubdate: Date?
     public var duration: Int?
     public var pageCount: Int?
+    /// 失败退避的下次可领时间；nil 表示立即可领。
+    public var nextRetryAt: Date?
     public var outputs: [TaskOutput]
 
     /// 队列行优先显示标题，退化为 BV，再退化为原始链接。

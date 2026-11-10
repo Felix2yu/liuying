@@ -11,7 +11,19 @@ public enum URLExtractor {
     static let pattern = #"https?://(?:(?!https?://)[^\s，。、）】])+"#
 
     /// 分享文案里链接尾部常见的粘连标点。
-    static let trailingPunctuation: Set<Character> = [".", ",", ";", "，", "。", "；", ")", "）", "]", "】"]
+    /// 中文引号/书名号这类符号后面往往还接着正文，单靠「从尾部剥」不够，
+    /// 所以另有 boundaryPunctuation 负责从中间截断。
+    static let trailingPunctuation: Set<Character> = [
+        ".", ",", ";", "\"", "'", "`", "，", "。", "；", ")", "）", "]", "】", "、",
+        "“", "”", "‘", "’", "「", "」", "『", "』", "《", "》", "〈", "〉",
+        "：", "！", "？", "＜", "＞", "…",
+    ]
+
+    /// 一旦出现就说明 URL 到头了（后面是正文），不能只按尾随标点处理。
+    static let boundaryPunctuation: Set<Character> = [
+        "“", "”", "‘", "’", "「", "」", "『", "』", "《", "》", "〈", "〉",
+        "：", "！", "？", "＜", "＞", "`",
+    ]
 
     /// B 站主机的精确白名单。
     static let bilibiliHosts: Set<String> = ["b23.tv", "www.bilibili.com", "bilibili.com", "bilibili.tv"]
@@ -35,7 +47,12 @@ public enum URLExtractor {
         var found: [Found] = []
         for match in matches {
             guard let rawRange = Range(match.range, in: text) else { continue }
-            var end = rawRange.upperBound
+            // 「https://…」后面直接跟中文引号/书名号 + 正文时，正则会把正文也吃进来；
+            // 先从第一个正文边界截断，再剥尾随标点。
+            var end = rawRange.lowerBound
+            while end < rawRange.upperBound, !boundaryPunctuation.contains(text[end]) {
+                end = text.index(after: end)
+            }
             while end > rawRange.lowerBound, trailingPunctuation.contains(text[text.index(before: end)]) {
                 end = text.index(before: end)
             }

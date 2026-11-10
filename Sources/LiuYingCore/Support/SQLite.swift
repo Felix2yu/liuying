@@ -55,7 +55,8 @@ public struct SQLiteError: Error, CustomStringConvertible, Sendable {
     public var description: String { "SQLite 错误 \(code)：\(message)" }
 }
 
-/// 单连接、串行访问。单用户应用，并发压力只在「界面读写 + 后台引擎」两处，一把递归锁足够。
+/// 单连接、串行访问。单用户应用，并发压力只在「界面读写 + 后台引擎」两处，一把递归锁足够；
+/// 但事务必须从 BEGIN 到 COMMIT 整段持锁（见 transaction），否则另一个 actor 的写入会插进事务。
 public final class SQLiteDatabase: @unchecked Sendable {
     private var handle: OpaquePointer?
     private let lock = NSRecursiveLock()
@@ -89,27 +90,14 @@ public final class SQLiteDatabase: @unchecked Sendable {
     public func exec(_ sql: String) throws {
         lock.lock()
         defer { lock.unlock() }
-        var err: UnsafeMutablePointer<CChar>?
-        let rc = sqlite3_exec(handle, sql, nil, nil, &err)
-        guard rc == SQLITE_OK else {
-            let message = err.map { String(cString: $0) } ?? "执行失败"
-            if let err { sqlite3_free(err) }
-            throw SQLiteError(code: rc, message: message)
-        }
+        try execLocked(sql)
     }
 
     @discardableResult
     public func run(_ sql: String, _ params: [SQLValue] = []) throws -> Int64 {
         lock.lock()
         defer { lock.unlock() }
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        try bind(stmt, params)
-        let rc = sqlite3_step(stmt)
-        guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
-            throw SQLiteError(code: rc, message: String(cString: sqlite3_errmsg(handle)))
-        }
-        return sqlite3_last_insert_rowid(handle)
+        return try runLocked(sql, params)
     }
 
     /// 单行查询，无结果返回 nil。
@@ -120,6 +108,52 @@ public final class SQLiteDatabase: @unchecked Sendable {
     public func query(_ sql: String, _ params: [SQLValue] = []) throws -> [SQLRow] {
         lock.lock()
         defer { lock.unlock() }
+        return try queryLocked(sql, params)
+    }
+
+    /// 一个事务里跑一段写入；整段持有同一把递归锁。
+    ///
+    /// 旧实现只在单次 exec/run 上加锁，BEGIN 之后 COMMIT 之前是一段「锁真空」：
+    /// TaskStore 与 SubscriptionStore 共用这条连接，别的 actor 的写入会插进事务里，
+    /// 一旦 ROLLBACK 就把别人的写入一起回滚，lastInsertRowID 也可能被改写。
+    public func transaction<T>(_ body: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        try execLocked("BEGIN IMMEDIATE;")
+        do {
+            let value = try body()
+            try execLocked("COMMIT;")
+            return value
+        } catch {
+            try? execLocked("ROLLBACK;")
+            throw error
+        }
+    }
+
+    // MARK: - 无锁内部实现（调用方已持锁；事务内 body 走 public API 时由递归锁重入）
+
+    private func execLocked(_ sql: String) throws {
+        var err: UnsafeMutablePointer<CChar>?
+        let rc = sqlite3_exec(handle, sql, nil, nil, &err)
+        guard rc == SQLITE_OK else {
+            let message = err.map { String(cString: $0) } ?? "执行失败"
+            if let err { sqlite3_free(err) }
+            throw SQLiteError(code: rc, message: message)
+        }
+    }
+
+    private func runLocked(_ sql: String, _ params: [SQLValue]) throws -> Int64 {
+        let stmt = try prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        try bind(stmt, params)
+        let rc = sqlite3_step(stmt)
+        guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
+            throw SQLiteError(code: rc, message: String(cString: sqlite3_errmsg(handle)))
+        }
+        return sqlite3_last_insert_rowid(handle)
+    }
+
+    private func queryLocked(_ sql: String, _ params: [SQLValue]) throws -> [SQLRow] {
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
         try bind(stmt, params)
@@ -135,19 +169,6 @@ public final class SQLiteDatabase: @unchecked Sendable {
             }
         }
         return rows
-    }
-
-    /// 一个事务里跑一段写入；任何一步抛错就整体回滚。
-    public func transaction<T>(_ body: () throws -> T) throws -> T {
-        try exec("BEGIN IMMEDIATE;")
-        do {
-            let value = try body()
-            try exec("COMMIT;")
-            return value
-        } catch {
-            try? exec("ROLLBACK;")
-            throw error
-        }
     }
 
     public var userVersion: Int32 {

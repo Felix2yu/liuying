@@ -17,6 +17,7 @@ public actor SubscriptionPoller {
     private let taskStore: TaskStore
     private let client: BiliClient
     private let notifier: any EngineNotifying
+    private var notifyEnabled = true
     static let errorThreshold = 3
 
     public init(
@@ -29,6 +30,11 @@ public actor SubscriptionPoller {
         self.taskStore = taskStore
         self.client = client
         self.notifier = notifier
+    }
+
+    /// 由 Engine.updateConfig 转发「发送通知」开关，保证订阅熔断提示也受控。
+    public func setNotifyEnabled(_ enabled: Bool) {
+        notifyEnabled = enabled
     }
 
     /// 轮询所有启用的订阅，返回新入队总数。
@@ -48,27 +54,38 @@ public actor SubscriptionPoller {
         return await poll(subscription)
     }
 
-    /// 手动导入最近 N 条（含首次同步之后想补看的情况）。
+    /// 手动导入最近 N 条（含首次同步之后想补看的情况）。保留 Int 版本给既有调用方。
     public func importRecent(subscriptionID: Int64, count: Int) async -> Int {
-        guard let subscription = try? await store.subscription(id: subscriptionID) else { return 0 }
+        await importRecentOutcome(subscriptionID: subscriptionID, count: count).added
+    }
+
+    /// 带错误信息的版本：UI 不能再把 412 风控显示成「什么都没发生」。
+    public func importRecentOutcome(subscriptionID: Int64, count: Int) async -> PollOutcome {
+        guard let subscription = try? await store.subscription(id: subscriptionID) else {
+            return PollOutcome(added: 0, error: "订阅不存在", initialSync: false)
+        }
         do {
             let videos = try await client.latestUploads(mid: subscription.mid)
             let slice = Array(videos.prefix(max(1, count)))
-            let added = await enqueue(videos: slice, subscription: subscription)
-            if let newest = videos.compactMap(\.created).max() {
-                try? await store.recordSuccess(
-                    id: subscription.id,
-                    watermark: max(newest, subscription.watermark ?? .distantPast),
-                    initialSyncDone: true
-                )
-            }
-            return added
+            let outcome = await enqueue(videos: slice, subscription: subscription)
+            // 水位只推进到「本次真正处理过」的最新一条。旧实现用整页最新时间推进，
+            // 会把第 6~49 条永久挡在增量轮询之外。
+            try? await store.recordSuccess(
+                id: subscription.id,
+                watermark: outcome.newestHandled.map {
+                    max($0, subscription.watermark ?? .distantPast)
+                },
+                initialSyncDone: true
+            )
+            return PollOutcome(added: outcome.added, error: nil, initialSync: false)
         } catch {
+            let attempts = subscription.consecutiveErrors + 1
             try? await store.recordFailure(
                 id: subscription.id, error: error.localizedDescription,
-                disable: subscription.consecutiveErrors + 1 >= Self.errorThreshold
+                disable: attempts >= Self.errorThreshold
             )
-            return 0
+            Log.error("订阅 \(subscription.displayName) 导入失败：\(error.localizedDescription)")
+            return PollOutcome(added: 0, error: error.localizedDescription, initialSync: false)
         }
     }
 
@@ -97,17 +114,17 @@ public actor SubscriptionPoller {
                 guard let created = video.created else { return false }
                 return created > watermark
             }
-            let added = await enqueue(videos: candidates, subscription: subscription)
-            let newest = videos.compactMap(\.created).max()
+            let outcome = await enqueue(videos: candidates, subscription: subscription)
+            // 只推进到成功落库/已存在的最新一条；入队失败的视频留在水位之前，下轮还能补。
             try? await store.recordSuccess(
                 id: subscription.id,
-                watermark: newest.map { max($0, watermark) },
+                watermark: outcome.newestHandled.map { max($0, watermark) },
                 initialSyncDone: true
             )
-            if added > 0 {
-                Log.info("订阅 \(subscription.displayName) 捕获 \(added) 条新投稿")
+            if outcome.added > 0 {
+                Log.info("订阅 \(subscription.displayName) 捕获 \(outcome.added) 条新投稿")
             }
-            return PollOutcome(added: added, error: nil, initialSync: false)
+            return PollOutcome(added: outcome.added, error: nil, initialSync: false)
         } catch {
             let attempts = subscription.consecutiveErrors + 1
             let disable = attempts >= Self.errorThreshold
@@ -115,16 +132,23 @@ public actor SubscriptionPoller {
                 id: subscription.id, error: error.localizedDescription, disable: disable
             )
             Log.error("订阅 \(subscription.displayName) 轮询失败（第 \(attempts) 次）：\(error.localizedDescription)")
-            if disable {
+            if disable, notifyEnabled {
                 await notifier.message("订阅「\(subscription.displayName)」连续 \(attempts) 次失败，已自动停用")
             }
             return PollOutcome(added: 0, error: error.localizedDescription, initialSync: false)
         }
     }
 
-    /// 按 bvid 对任务库去重后入队。
-    private func enqueue(videos: [BiliVideo], subscription: Subscription) async -> Int {
+    /// 一次入队的汇总。newestHandled 只包含「确实落库或本来就已存在」的稿件，
+    /// 写入失败的不计入，否则水位会跳过它们造成永久漏抓。
+    private struct EnqueueSummary {
         var added = 0
+        var newestHandled: Date?
+    }
+
+    /// 按 bvid 对任务库去重后入队。
+    private func enqueue(videos: [BiliVideo], subscription: Subscription) async -> EnqueueSummary {
+        var summary = EnqueueSummary()
         for video in videos {
             let task = NewTask(
                 rawURL: video.pageURL,
@@ -139,13 +163,18 @@ public actor SubscriptionPoller {
             )
             do {
                 if try await taskStore.add(task) != nil {
-                    added += 1
+                    summary.added += 1
                     Log.info("订阅入队：\(video.bvid) \(video.title)")
+                }
+                // 已存在同样算「已处理」，水位可以推过它。
+                if let created = video.created {
+                    let current = summary.newestHandled ?? created
+                    summary.newestHandled = max(current, created)
                 }
             } catch {
                 Log.warning("订阅入队失败：\(error)")
             }
         }
-        return added
+        return summary
     }
 }

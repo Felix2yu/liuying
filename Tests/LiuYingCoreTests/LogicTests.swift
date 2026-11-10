@@ -770,3 +770,345 @@ final class ShareTextTests: XCTestCase {
         )
     }
 }
+
+// MARK: - P0 回归：监听文件热更新
+
+final class ICloudLinkSourceTests: XCTestCase {
+    func testReconfigureSwitchesToNewPath() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-linksource-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let first = (directory as NSString).appendingPathComponent("first.txt")
+        let second = (directory as NSString).appendingPathComponent("second.txt")
+        let urlA = "https://www.bilibili.com/video/BV1GJ411x7h7"
+        let urlB = "https://www.bilibili.com/video/BV1p8nh61Efm"
+        try Data(urlA.utf8).write(to: URL(fileURLWithPath: first))
+        try Data(urlB.utf8).write(to: URL(fileURLWithPath: second))
+
+        let source = ICloudLinkSource(configuredPath: first)
+        let before = await source.collect()
+        XCTAssertEqual(before, [urlA])
+
+        await source.reconfigure(configuredPath: second)
+        let path = await source.path
+        XCTAssertEqual(path, second, "设置里改「监听文件」必须真的切到新路径")
+        let after = await source.collect()
+        XCTAssertEqual(after, [urlB])
+    }
+}
+
+// MARK: - P0 回归：每轮最多处理确实限流
+
+final class EngineRoundLimitTests: XCTestCase {
+    private func fixture(limit: Int, directory: String) async throws -> (Engine, TaskStore, Int64) {
+        let linkFile = (directory as NSString).appendingPathComponent("links.txt")
+        try Data().write(to: URL(fileURLWithPath: linkFile))
+
+        var config = AppConfig()
+        config.watchFile = linkFile
+        config.downloadDir = (directory as NSString).appendingPathComponent("out")
+        config.otherBackend = .yutto
+        config.maxTasksPerRound = limit
+        config.notify = false
+        // 不存在的 binary 让下载立即失败，不起子进程、不联网。
+        config.yutto.binary = "liuying-missing-\(UUID().uuidString)"
+
+        let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
+        let maybeID = try await store.add(NewTask(
+            rawURL: "https://example.com/v/1", taskKey: "key-1", source: .manual
+        ))
+        let id = try XCTUnwrap(maybeID)
+        return (Engine(store: store, config: config), store, id)
+    }
+
+    func testMaxTasksPerRoundLimitsOneRound() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-engine-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let (engine, store, id) = try await fixture(limit: 1, directory: directory)
+        await engine.runOnce()
+        let task = try await store.task(id: id)
+        XCTAssertEqual(task?.attempts, 1, "每轮最多 1 个时，一轮只能 claim 一次")
+        XCTAssertEqual(task?.state, .pending)
+    }
+
+    /// P1：失败必须带退避，不能因为「上限放开」就在同一轮里连打 3 次。
+    func testFailedTaskIsBackedOffAndNotReclaimedInSameRound() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-engine-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let (engine, store, id) = try await fixture(limit: 20, directory: directory)
+        await engine.runOnce()
+        let task = try await store.task(id: id)
+        XCTAssertEqual(task?.attempts, 1)
+        XCTAssertNotNil(task?.nextRetryAt, "失败后要写入下次可重试时间")
+        let duringBackoff = try await store.claim(limit: 1)
+        XCTAssertTrue(duringBackoff.isEmpty, "退避期内不能立刻重领")
+
+        try await store.clearRetryDelay(id: id)
+        let afterBackoff = try await store.claim(limit: 1)
+        XCTAssertEqual(afterBackoff.first?.attempts, 2, "退避到点后可继续")
+    }
+}
+
+// MARK: - P1 回归：去重键、短链失败重试、Downie 确认、视频库错误态
+
+private final class RedirectCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func reset() { lock.lock(); defer { lock.unlock() }; value = 0 }
+    func next() -> Int { lock.lock(); defer { lock.unlock() }; value += 1; return value }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+private let redirectCounter = RedirectCounter()
+
+/// 永远失败的短链跳转，用来验证「解析失败不进缓存」。
+private final class AlwaysFailingRedirectProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        _ = redirectCounter.next()
+        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+    override func stopLoading() {}
+}
+
+final class P1RegressionTests: XCTestCase {
+    func testNonBilibiliHostCannotClaimABVID() {
+        XCTAssertNil(CanonicalKey.localKey("https://example.com/video/BV1GJ411x7h7"))
+        XCTAssertEqual(
+            CanonicalKey.localKey("https://www.bilibili.com/video/BV1GJ411x7h7"),
+            "BV1GJ411x7h7"
+        )
+    }
+
+    func testPageParameterSeparatesKeysButNotVideoID() {
+        let base = "https://www.bilibili.com/video/BV1GJ411x7h7"
+        XCTAssertEqual(CanonicalKey.localKey(base), "BV1GJ411x7h7")
+        XCTAssertEqual(CanonicalKey.localKey(base + "?p=1"), "BV1GJ411x7h7")
+        XCTAssertEqual(CanonicalKey.localKey(base + "?p=2"), "BV1GJ411x7h7#p2")
+        XCTAssertEqual(CanonicalKey.videoID(in: base + "?p=2"), "BV1GJ411x7h7")
+    }
+
+    func testLowercaseBVPrefixIsNormalized() {
+        XCTAssertEqual(CanonicalKey.localKey("bv1GJ411x7h7"), "BV1GJ411x7h7")
+    }
+
+    func testShortLinkResolutionFailureIsNotCached() async {
+        redirectCounter.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AlwaysFailingRedirectProtocol.self]
+        let resolver = KeyResolver(session: URLSession(configuration: configuration))
+        let short = "https://b23.tv/abc123"
+        let first = await resolver.key(for: short)
+        let second = await resolver.key(for: short)
+        XCTAssertEqual(first, short)
+        XCTAssertEqual(second, short)
+        XCTAssertEqual(redirectCounter.count, 2, "失败结果不能缓存，网络恢复后必须重新解析")
+    }
+
+    func testConfirmTurnsSentIntoDone() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-confirm-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
+        let maybeID = try await store.add(NewTask(
+            rawURL: "https://example.com/v/1", taskKey: "key-1", source: .icloud
+        ))
+        let id = try XCTUnwrap(maybeID)
+        try await store.finish(id: id, state: .sent, backend: "downie")
+        let sent = try await store.task(id: id)
+        XCTAssertEqual(sent?.state, .sent)
+        let reclaimed = try await store.claim(limit: 1)
+        XCTAssertTrue(reclaimed.isEmpty, "已交给 Downie 不能被自动重领")
+
+        let engine = Engine(store: store, config: AppConfig())
+        await engine.confirm(taskID: id)
+        let confirmed = try await store.task(id: id)
+        XCTAssertEqual(confirmed?.state, .done)
+    }
+
+    func testMissingDownloadDirectoryIsReportedAsScanError() async {
+        let scanner = LibraryScanner()
+        let outcome = await scanner.scanChecked(
+            root: NSTemporaryDirectory() + "liuying-missing-\(UUID().uuidString)"
+        )
+        XCTAssertTrue(outcome.items.isEmpty)
+        XCTAssertNotNil(outcome.error, "超时/没权限不能伪装成空库")
+    }
+
+    /// 手动添加必须能区分「没识别到」「全部重复」「新增 N 条」。
+    func testAddManualReportsParsedAddedAndDuplicates() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-manual-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let linkFile = (directory as NSString).appendingPathComponent("links.txt")
+        try Data().write(to: URL(fileURLWithPath: linkFile))
+
+        var config = AppConfig()
+        config.watchFile = linkFile
+        config.notify = false
+        let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
+        let engine = Engine(store: store, config: config)
+        let url = "https://www.bilibili.com/video/BV1GJ411x7h7"
+
+        let first = await engine.addManual(text: url)
+        XCTAssertEqual(first.parsed, 1)
+        XCTAssertEqual(first.added, 1)
+        XCTAssertEqual(first.duplicates, 0)
+        XCTAssertNil(first.failure)
+
+        let again = await engine.addManual(text: "复制了同一条 \(url)")
+        XCTAssertEqual(again.added, 0)
+        XCTAssertEqual(again.duplicates, 1)
+
+        let empty = await engine.addManual(text: "这里没有链接")
+        XCTAssertEqual(empty.parsed, 0)
+    }
+}
+
+// MARK: - P2 回归
+
+/// publish 是异步回调，测试用带锁的盒子接住最新快照。
+private final class SnapshotBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = EngineSnapshot()
+
+    func set(_ snapshot: EngineSnapshot) {
+        lock.lock()
+        value = snapshot
+        lock.unlock()
+    }
+
+    var snapshot: EngineSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
+final class P2RegressionTests: XCTestCase {
+    /// 实机 UI 验证发现的竞态：publish 在 store.stats()/recent() 上挂起时，
+    /// 把开头的旧拷贝写回 snapshot 会抹掉期间 start() 设置的 isRunning，
+    /// 表现为引擎明明在轮询、菜单栏却一直显示「引擎未运行」。
+    func testPublishDoesNotClobberRunningState() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-publish-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let linkFile = (directory as NSString).appendingPathComponent("links.txt")
+        try Data().write(to: URL(fileURLWithPath: linkFile))
+        var config = AppConfig()
+        config.watchFile = linkFile
+        config.downloadDir = (directory as NSString).appendingPathComponent("out")
+        config.notify = false
+        config.yutto.binary = "liuying-missing-\(UUID().uuidString)"
+        let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
+        let engine = Engine(store: store, config: config)
+        let box = SnapshotBox()
+        await engine.setSnapshotSink { box.set($0) }
+
+        await engine.start()
+        // 让多轮 publish 与 start / runRound 交错：旧实现会在这里把 isRunning 写回 false。
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<12 {
+                group.addTask { await engine.refreshSnapshot() }
+            }
+        }
+        await engine.refreshSnapshot()
+        XCTAssertTrue(box.snapshot.isRunning, "引擎启动后快照必须保持 isRunning=true")
+    }
+
+    func testChineseQuotesAndFollowingTextDoNotJoinURL() {
+        let cases: [(String, String)] = [
+            ("分享「https://b23.tv/abc123」给你看", "https://b23.tv/abc123"),
+            ("《https://b23.tv/abc123》完整版", "https://b23.tv/abc123"),
+            ("链接“https://b23.tv/abc123”复制", "https://b23.tv/abc123"),
+            ("https://b23.tv/abc123：这个是标题", "https://b23.tv/abc123"),
+            ("https://b23.tv/abc123！", "https://b23.tv/abc123"),
+            ("\"https://b23.tv/abc123\"", "https://b23.tv/abc123"),
+            ("https://b23.tv/abc123，快看", "https://b23.tv/abc123"),
+        ]
+        for (input, expected) in cases {
+            XCTAssertEqual(URLExtractor.extract(from: input), [expected], "输入：\(input)")
+        }
+    }
+
+    func testUndoManualRemovesExactlyTheNewTasks() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-undo-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        var config = AppConfig()
+        config.notify = false
+        let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
+        let engine = Engine(store: store, config: config)
+
+        let result = await engine.addManual(text: """
+        https://www.bilibili.com/video/BV1GJ411x7h7
+        https://www.bilibili.com/video/BV1xx411c7mD
+        """)
+        XCTAssertEqual(result.added, 2)
+        XCTAssertEqual(result.addedIDs.count, 2)
+        XCTAssertNil(result.failure)
+
+        let removed = await engine.undoManual(taskIDs: result.addedIDs)
+        XCTAssertEqual(removed, 2)
+        let remainingKeys = try await store.knownKeys()
+        XCTAssertTrue(remainingKeys.isEmpty, "撤销后去重键也要释放")
+    }
+
+    func testShowMoreHistoryExpandsSnapshotLimit() async throws {
+        let directory = NSTemporaryDirectory() + "liuying-history-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        var config = AppConfig()
+        config.notify = false
+        let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
+        for index in 0..<35 {
+            _ = try await store.add(NewTask(
+                rawURL: "https://example.com/v/\(index)",
+                taskKey: "key-\(index)",
+                source: .manual
+            ))
+        }
+        let engine = Engine(store: store, config: config)
+        let box = SnapshotBox()
+        await engine.setSnapshotSink { box.set($0) }
+        await engine.refreshSnapshot()
+
+        XCTAssertEqual(box.snapshot.recent.count, 30)
+        XCTAssertTrue(box.snapshot.recentTruncated, "还有 5 条更旧记录")
+
+        await engine.showMoreHistory()
+        XCTAssertEqual(box.snapshot.recentLimit, 80)
+        XCTAssertEqual(box.snapshot.recent.count, 35)
+        XCTAssertFalse(box.snapshot.recentTruncated)
+    }
+
+    func testResetToDefaultsRestoresEveryField() async {
+        let name = "liuying-p2-config-\(UUID().uuidString)"
+        await MainActor.run {
+            let defaults = UserDefaults(suiteName: name)!
+            defer { defaults.removePersistentDomain(forName: name) }
+            let store = ConfigStore(defaults: defaults)
+            store.update {
+                $0.pollInterval = 300
+                $0.notify = false
+                $0.downloadDir = "/tmp/liuying-elsewhere"
+            }
+            XCTAssertEqual(store.config.pollInterval, 300)
+
+            store.resetToDefaults()
+            XCTAssertEqual(store.config.pollInterval, 15)
+            XCTAssertTrue(store.config.notify)
+            XCTAssertEqual(store.config.downloadDir, "~/Downloads/Bilibili")
+        }
+    }
+}

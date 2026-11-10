@@ -17,18 +17,47 @@ struct LiuyingApp: App {
         }
         .menuBarExtraStyle(.menu)
 
-        Window(AppIdentity.displayName, id: "main") {
+        // 窗口标题用内容区名称，不用 App 名（HIG Toolbars > Titles）。
+        Window("视频库", id: "main") {
             MainWindow()
                 .environment(env)
                 .task { await env.bootstrap() }
         }
         .defaultSize(width: 960, height: 640)
         .windowResizability(.contentMinSize)
+        .commands {
+            // 本 App 不创建文档：把 File > New（⌘N）让给「添加链接…」。
+            // ⌘O 保留系统 Open 语义，不再借用；主窗口由「显示」组与 Dock 重开进入。
+            CommandGroup(replacing: .newItem) {
+                Button("添加链接…") {
+                    WindowRouter.shared.request(.addLink)
+                }
+                .keyboardShortcut("n")
+            }
+            // 追加到系统 View 菜单的工具栏组之后，为三个区域提供键盘导航。
+            CommandGroup(after: .toolbar) {
+                Button("视频库") { MainWindowState.shared.selectedTab = .library }
+                    .keyboardShortcut("1")
+                Button("队列") { MainWindowState.shared.selectedTab = .queue }
+                    .keyboardShortcut("2")
+                Button("订阅") { MainWindowState.shared.selectedTab = .subscriptions }
+                    .keyboardShortcut("3")
+                Divider()
+                Button("显示主窗口") {
+                    WindowRouter.shared.request(.library(focus: nil))
+                }
+                Button("立即检查") {
+                    Task { await AppEnvironment.shared.engine?.tickNow() }
+                }
+            }
+        }
 
         Settings {
             SettingsView()
                 .environment(env)
         }
+        .defaultSize(width: 620, height: 560)
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -42,6 +71,9 @@ struct MenuBarLabel: View {
 
     var body: some View {
         Image(systemName: symbol)
+            .accessibilityLabel(Text(AppIdentity.displayName + " 状态"))
+            .accessibilityValue(Text(statusText))
+            .accessibilityAddTraits(.isButton)
             .task(id: WindowRouter.shared.token) {
                 guard let route = WindowRouter.shared.consume() else { return }
                 openWindow(id: "main")
@@ -51,11 +83,20 @@ struct MenuBarLabel: View {
             }
     }
 
+    /// 统一使用无填充的 SF Symbol 轮廓，避免 fill / outline 混用让菜单栏图标风格跳变。
+    /// 具体状态由无障碍文案表达，不再靠图标形状差异传达。
     private var symbol: String {
         if snapshot.isPaused { return "pause.circle" }
-        if snapshot.downloadingCount > 0 { return "arrow.down.circle.fill" }
-        if snapshot.pendingCount > 0 { return "tray.full" }
+        if snapshot.downloadingCount > 0 { return "arrow.down.circle" }
+        if snapshot.pendingCount > 0 { return "tray" }
         return "play.rectangle.on.rectangle"
+    }
+
+    private var statusText: String {
+        if snapshot.isPaused { return "已暂停轮询" }
+        if snapshot.downloadingCount > 0 { return "下载中，\(snapshot.downloadingCount) 个任务" }
+        if snapshot.pendingCount > 0 { return "待处理 \(snapshot.pendingCount) 个任务" }
+        return "空闲"
     }
 
     private func apply(_ route: WindowRouter.Route) {

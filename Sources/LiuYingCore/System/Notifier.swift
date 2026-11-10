@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UserNotifications
 
@@ -8,6 +9,29 @@ import UserNotifications
 @MainActor
 public final class Notifier {
     public static let shared = Notifier()
+
+    public enum AuthorizationState: String, Sendable {
+        case unavailable
+        case notDetermined
+        case authorized
+        case denied
+        case unknown
+
+        public var displayText: String {
+            switch self {
+            case .unavailable: "当前是裸二进制，通知不可用"
+            case .notDetermined: "尚未请求通知权限"
+            case .authorized: "已授权"
+            case .denied: "已在系统设置里关闭通知"
+            case .unknown: "状态未知"
+            }
+        }
+    }
+
+    /// 系统设置 → 通知。已拒绝时系统不会再弹授权框，只能引导用户去这里放行。
+    public static let notificationSettingsURL = URL(
+        string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+    )!
 
     private var center: UNUserNotificationCenter? {
         guard Self.canManageBanners else { return nil }
@@ -20,26 +44,55 @@ public final class Notifier {
     }
 
     private var authorized = false
+    public private(set) var state: AuthorizationState
 
-    private init() {}
+    private init() {
+        state = Self.canManageBanners ? .unknown : .unavailable
+    }
 
-    /// 只在 `.notDetermined` 时弹授权框；已拒绝就安静跳过。
-    public func requestAuthorizationIfNeeded() async {
-        guard let center else { return }
-        let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
+    /// 重新读系统侧授权状态。用户在系统设置里改过之后切回 App 会调它。
+    public func refreshAuthorization() async {
+        guard let center else {
+            state = .unavailable
+            authorized = false
+            return
+        }
+        switch await center.notificationSettings().authorizationStatus {
         case .notDetermined:
+            state = .notDetermined
+            authorized = false
+        case .authorized, .provisional, .ephemeral:
+            state = .authorized
+            authorized = true
+        case .denied:
+            state = .denied
+            authorized = false
+        @unknown default:
+            state = .unknown
+            authorized = false
+        }
+    }
+
+    /// 只在 `.notDetermined` 时弹授权框；已拒绝就安静跳过，之后刷新真实状态。
+    public func requestAuthorizationIfNeeded() async {
+        guard let center else {
+            state = .unavailable
+            authorized = false
+            return
+        }
+        if await center.notificationSettings().authorizationStatus == .notDetermined {
             do {
-                authorized = try await center.requestAuthorization(options: [.alert, .sound])
-                Log.info("通知授权：\(authorized)")
+                let granted = try await center.requestAuthorization(options: [.alert, .sound])
+                Log.info("通知授权：\(granted)")
             } catch {
                 Log.warning("通知授权失败：\(error.localizedDescription)")
             }
-        case .authorized, .provisional, .ephemeral:
-            authorized = true
-        default:
-            authorized = false
         }
+        await refreshAuthorization()
+    }
+
+    public func openNotificationSettings() {
+        NSWorkspace.shared.open(Self.notificationSettingsURL)
     }
 
     public func post(title: String, body: String, identifier: String = UUID().uuidString) {
