@@ -29,6 +29,14 @@ struct MainWindow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 760, minHeight: 520)
+        // 给 NSWindow 打标：⌘V 监听只认这个窗口，不碰设置窗口与其它面板。
+        .background(alignment: .topLeading) {
+            MainWindowTag()
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+        }
+        // ⌘V / 导入共用的非模态反馈，不抢焦点、自动消失。
+        .overlay(alignment: .bottom) { feedbackBanner }
         // 窗口标题随当前区域变化，不用 App 名（HIG Toolbars > Titles）。
         .navigationTitle(state.selectedTab.displayName)
         .toolbar {
@@ -81,6 +89,12 @@ struct MainWindow: View {
         )) {
             AddLinkSheet()
         }
+        .sheet(isPresented: Binding(
+            get: { state.showImportDownie },
+            set: { state.showImportDownie = $0 }
+        )) {
+            ImportDownieSheet()
+        }
         .sheet(isPresented: $showOnboarding, onDismiss: {
             // 「稍后设置」不写这个标记，下次启动还会再提示一次。
             if onboardingFinished {
@@ -94,6 +108,56 @@ struct MainWindow: View {
         }) {
             OnboardingView(didFinish: $onboardingFinished)
                 .environment(env)
+        }
+    }
+
+    @ViewBuilder
+    private var feedbackBanner: some View {
+        if let message = env.feedback.message {
+            HStack(spacing: 8) {
+                Image(systemName: "link.badge.plus")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text(message)
+                    .font(.callout)
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                if !env.feedback.undoIDs.isEmpty {
+                    Button("撤销") { undoPaste() }
+                        .controlSize(.small)
+                }
+                Button {
+                    env.feedback.dismiss()
+                } label: {
+                    Image(systemName: "xmark").font(.caption)
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .accessibilityLabel(Text("关闭提示"))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(.separator, lineWidth: 0.5)
+            )
+            .padding(12)
+            .frame(maxWidth: 520)
+        }
+    }
+
+    private func undoPaste() {
+        let ids = env.feedback.undoIDs
+        guard !ids.isEmpty else { return }
+        Task { @MainActor in
+            let removed = await env.engine?.undoManual(taskIDs: ids) ?? 0
+            env.feedback.show(
+                removed > 0
+                    ? "已撤销 \(removed) 条；已经开始下载的不撤销"
+                    : "没有可撤销的任务（可能已开始下载）"
+            )
         }
     }
 

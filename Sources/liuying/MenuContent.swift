@@ -41,6 +41,8 @@ struct MenuContent: View {
         Button("显示主窗口") { openWindow(.library(focus: nil)) }
         Button("添加链接…") { openWindow(.addLink) }
             .disabled(!engineReady)
+        Button("导入 Downie 下载记录…") { openWindow(.importDownie) }
+            .disabled(!engineReady)
         Button("立即检查") { Task { await env.engine?.tickNow() } }
             .disabled(!engineReady)
 

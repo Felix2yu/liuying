@@ -22,6 +22,9 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
         // 否则系统可以在不调用 applicationShouldTerminate 的情况下直接杀掉进程。
         ProcessInfo.processInfo.disableSuddenTermination()
 
+        // ⌘V 只在主窗口聚焦时生效；监听常驻，判定在主线程做。
+        PasteShortcutController.shared.install()
+
         // 睡眠期间轮询停摆，醒来立刻补跑一轮。
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
@@ -89,6 +92,7 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        PasteShortcutController.shared.uninstall()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }

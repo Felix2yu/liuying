@@ -108,6 +108,9 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public var notify = true
     /// 默认关闭：剪贴板是环境输入，自动触发下载要用户主动开。
     public var clipboardMonitor = false
+    /// 主窗口聚焦时按 ⌘V 直接下载剪贴板里的链接。显式手势，默认开；
+    /// 输入框聚焦、sheet、非主窗口时一律放行，不影响普通粘贴。
+    public var pasteShortcut = true
     /// UP 主订阅轮询间隔（秒）。
     public var subscriptionInterval = 1_800
     /// 手动覆盖 SESSDATA；留空则从 yutto 的 auth.toml 读。
@@ -129,6 +132,7 @@ public struct AppConfig: Codable, Sendable, Equatable {
         case maxTasksPerRound = "max_tasks_per_round"
         case notify
         case clipboardMonitor = "clipboard_monitor"
+        case pasteShortcut = "paste_shortcut"
         case subscriptionInterval = "subscription_interval"
         case sessdataOverride = "sessdata_override"
         case yuttoTimeout = "yutto_timeout"
@@ -147,6 +151,7 @@ public struct AppConfig: Codable, Sendable, Equatable {
         maxTasksPerRound = c.value(.maxTasksPerRound, d.maxTasksPerRound)
         notify = c.value(.notify, d.notify)
         clipboardMonitor = c.value(.clipboardMonitor, d.clipboardMonitor)
+        pasteShortcut = c.value(.pasteShortcut, d.pasteShortcut)
         subscriptionInterval = c.value(.subscriptionInterval, d.subscriptionInterval)
         sessdataOverride = c.value(.sessdataOverride, d.sessdataOverride)
         yuttoTimeout = c.value(.yuttoTimeout, d.yuttoTimeout)

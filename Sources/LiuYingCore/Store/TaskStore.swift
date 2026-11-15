@@ -57,6 +57,42 @@ public actor TaskStore {
         return added
     }
 
+    /// 导入历史记录专用：直接落一条**终态 `.done`** 的任务，不进 pending、不会被 claim。
+    /// 与 `add` 一样按 task_key 去重；已存在同名 key 返回 nil。
+    /// 不写 task_outputs —— 导出文件里的路径不能证明本机确实有这个文件，视频库仍由扫盘建立。
+    @discardableResult
+    public func addArchived(
+        _ task: NewTask,
+        backend: String? = nil,
+        title: String? = nil
+    ) throws -> Int64? {
+        try database.transaction {
+            if try database.queryOne(
+                "SELECT id FROM tasks WHERE task_key = ?;", [.text(task.taskKey)]
+            ) != nil {
+                return nil
+            }
+            let now = Date().timeIntervalSince1970
+            try database.run(
+                """
+                INSERT INTO tasks
+                    (raw_url, task_key, bvid, title, state, backend, attempts,
+                     created_at, updated_at, source, subscription_id, pubdate, duration, page_count)
+                VALUES (?, ?, ?, ?, 'done', ?, 0, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                [
+                    .text(task.rawURL), .text(task.taskKey), .text(task.bvid),
+                    .text(title ?? task.title), .text(backend),
+                    .double(now), .double(now),
+                    .text(task.source.rawValue), .int(task.subscriptionID),
+                    .double(task.pubdate?.timeIntervalSince1970),
+                    .int(task.duration.map(Int64.init)), .int(task.pageCount.map(Int64.init)),
+                ]
+            )
+            return database.lastInsertRowID
+        }
+    }
+
     // MARK: - 领取与收尾
 
     /// 取出待处理任务并标记为 downloading，attempts+1。
@@ -212,6 +248,24 @@ public actor TaskStore {
             try database.run(
                 "DELETE FROM tasks WHERE id IN (\(placeholders)) AND state = 'pending';",
                 ids.map { .int($0) }
+            )
+            return Int(try database.queryOne("SELECT changes() AS n;")?.int("n") ?? 0)
+        }
+    }
+
+    /// 撤销一次导入：只删本次新增的 `.downieImport` 记录，绝不碰别的来源或正在下载的任务。
+    @discardableResult
+    public func deleteImported(ids: [Int64]) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        let values: [SQLValue] = ids.map { .int($0) } + [.text(TaskSource.downieImport.rawValue)]
+        return try database.transaction {
+            try database.run(
+                """
+                DELETE FROM tasks WHERE id IN (\(placeholders))
+                    AND source = ? AND state != 'downloading';
+                """,
+                values
             )
             return Int(try database.queryOne("SELECT changes() AS n;")?.int("n") ?? 0)
         }

@@ -29,6 +29,8 @@ public enum TaskSource: String, Codable, Sendable, CaseIterable {
     case manual
     case clipboard
     case subscription
+    /// 从 Downie 历史导出文件登记的记录（只作已完成归档，不触发下载）。
+    case downieImport = "downie_import"
 
     public var displayName: String {
         switch self {
@@ -36,6 +38,7 @@ public enum TaskSource: String, Codable, Sendable, CaseIterable {
         case .manual: "手动"
         case .clipboard: "剪贴板"
         case .subscription: "订阅"
+        case .downieImport: "Downie 导入"
         }
     }
 }

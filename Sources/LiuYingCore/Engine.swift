@@ -34,6 +34,32 @@ public struct EnqueueOutcome: Sendable, Equatable {
     }
 }
 
+/// Downie 历史导入的明细。「文件内重复」与「任务库里已存在」分开报，
+/// 用户才能知道某条没导进来是重复了还是本来就有任务。
+public struct DownieImportResult: Sendable, Equatable {
+    /// 解析出的记录条数（含重复）。
+    public var scanned: Int
+    /// 同一份文件里 URL 或去重键撞车的条数。
+    public var duplicatesInFile: Int
+    /// 任务库里已有相同去重键的条数（不论原任务是什么状态）。
+    public var alreadyExists: Int
+    public var imported: Int
+    public var importedIDs: [Int64]
+    public var failure: String?
+
+    public init(
+        scanned: Int = 0, duplicatesInFile: Int = 0, alreadyExists: Int = 0,
+        imported: Int = 0, importedIDs: [Int64] = [], failure: String? = nil
+    ) {
+        self.scanned = scanned
+        self.duplicatesInFile = duplicatesInFile
+        self.alreadyExists = alreadyExists
+        self.imported = imported
+        self.importedIDs = importedIDs
+        self.failure = failure
+    }
+}
+
 /// 主编排器：轮询 → 去重入队 → 串行下载 → 容器规整 → 删链接 → 通知。
 ///
 /// 串行下载是刻意的（与旧版一致）：并发下载既抢带宽，也更容易触发 B 站风控。
@@ -318,6 +344,81 @@ public actor Engine {
         } catch {
             Log.error("撤销添加失败：\(error)")
             snapshot.lastError = "撤销添加失败：\(error.localizedDescription)"
+            await publish()
+            return 0
+        }
+    }
+
+    /// 导入 Downie 的**下载记录**：登记为「已完成」的归档任务，不触发下载、不删 links.txt、
+    /// 不发新增通知。目的是让去重键覆盖「Downie 里已经下过的内容」，并让队列里有统一历史。
+    /// 需要重新下载时，用户在队列里对这条点「重新下载」（走既有 requeue 流程）。
+    @discardableResult
+    public func importDownieRecords(_ records: [DownieHistoryRecord]) async -> DownieImportResult {
+        guard !records.isEmpty else { return DownieImportResult() }
+        var result = DownieImportResult(scanned: records.count)
+        do {
+            // 导入前就存在的键 = 「对应下载任务已存在」；本次导入自己插入的键 = 「文件内重复」。
+            // 两者都是跳过，但报给用户的口径必须分开，否则用户会以为库里本来就有这些任务。
+            let preexisting = try await store.knownKeys()
+            var insertedKeys = Set<String>()
+            var seenURLs = Set<String>()
+            for record in records {
+                guard seenURLs.insert(record.url).inserted else {
+                    result.duplicatesInFile += 1
+                    continue
+                }
+                let key = await keyResolver.key(for: record.url)
+                guard !preexisting.contains(key) else {
+                    result.alreadyExists += 1
+                    continue
+                }
+                guard insertedKeys.insert(key).inserted else {
+                    result.duplicatesInFile += 1
+                    continue
+                }
+                let newTask = NewTask(
+                    rawURL: record.url,
+                    taskKey: key,
+                    source: .downieImport,
+                    // bvid 只能是纯 BV/av 号；localKey 会带分 P 后缀，不能喂给 API。
+                    bvid: CanonicalKey.videoID(in: record.url),
+                    title: record.title
+                )
+                if let id = try await store.addArchived(
+                    newTask, backend: "downie", title: record.title
+                ) {
+                    result.imported += 1
+                    result.importedIDs.append(id)
+                } else {
+                    // 并发写入下 key 被别的入口抢先占了，按「已存在」计，并释放本次占位。
+                    insertedKeys.remove(key)
+                    result.alreadyExists += 1
+                }
+            }
+            Log.info(
+                "导入 Downie 记录：新增 \(result.imported) 条，文件内重复 \(result.duplicatesInFile) 条，"
+                    + "已有任务 \(result.alreadyExists) 条"
+            )
+            await publish()
+            return result
+        } catch {
+            Log.error("导入 Downie 记录失败：\(error)")
+            result.failure = error.localizedDescription
+            return result
+        }
+    }
+
+    /// 撤销一次导入。只删本次新增的、来源为 `.downieImport` 的归档记录。
+    @discardableResult
+    public func undoImport(taskIDs: [Int64]) async -> Int {
+        guard !taskIDs.isEmpty else { return 0 }
+        do {
+            let removed = try await store.deleteImported(ids: taskIDs)
+            await publish()
+            return removed
+        } catch {
+            Log.error("撤销导入失败：\(error)")
+            snapshot.lastError = "撤销导入失败：\(error.localizedDescription)"
             await publish()
             return 0
         }

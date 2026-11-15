@@ -110,6 +110,8 @@ struct MenuBarLabel: View {
             MainWindowState.shared.selectedTab = .subscriptions
         case .addLink:
             MainWindowState.shared.showAddLink = true
+        case .importDownie:
+            MainWindowState.shared.showImportDownie = true
         }
     }
 }
@@ -138,6 +140,7 @@ final class MainWindowState {
     var selectedTab: Tab = .library
     var focusID: String?
     var showAddLink = false
+    var showImportDownie = false
     var searchText = ""
 
     private init() {}

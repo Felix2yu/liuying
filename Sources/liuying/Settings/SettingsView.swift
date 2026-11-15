@@ -110,6 +110,10 @@ struct PathsPane: View {
                 Text("非 B 站链接会按下面的路由交给 Downie；这个开关会抓取剪贴板里的所有网址。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("主窗口按 ⌘V 直接下载剪贴板里的链接", isOn: bind(env, \.pasteShortcut))
+                Text("只在主窗口是焦点窗口、没有弹层、且不在输入框里时生效；其它情况 ⌘V 仍是系统粘贴。支持分享文案里的 http(s) 链接，B 站走 yutto、其它按路由走 Downie。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("登录时启动", isOn: Binding(
                     get: { env.loginItem.isEnabled },
                     set: { _ = env.loginItem.set($0) }

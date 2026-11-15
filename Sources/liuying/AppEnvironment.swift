@@ -13,6 +13,7 @@ final class WindowRouter {
         case queue
         case subscriptions
         case addLink
+        case importDownie
     }
 
     static let shared = WindowRouter()
@@ -75,6 +76,8 @@ final class AppEnvironment {
     let configStore: ConfigStore
     let model = EngineModel()
     let loginItem = LoginItemState()
+    /// ⌘V / 导入的非模态提示，主窗口负责展示。
+    let feedback = FeedbackCenter()
     private(set) var taskStore: TaskStore?
     private(set) var engine: Engine?
     private(set) var subscriptions: SubscriptionService?
