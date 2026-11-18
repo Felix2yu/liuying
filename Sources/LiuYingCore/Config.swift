@@ -117,6 +117,9 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public var sessdataOverride = ""
     /// 单次 yutto 调用超时（秒）。旧版用环境变量 BILI_WATCHER_TIMEOUT，默认 3600。
     public var yuttoTimeout = 3_600
+    /// 跨设备去重同步：把已入队链接的键写进 links.txt 同目录的清单随 iCloud 同步，
+    /// 新机启动先导入，避免空库把 links.txt 里的旧链接全部重新下载。
+    public var dedupSync = true
 
     public var yutto = YuttoConfig()
     public var downie = DownieConfig()
@@ -136,6 +139,7 @@ public struct AppConfig: Codable, Sendable, Equatable {
         case subscriptionInterval = "subscription_interval"
         case sessdataOverride = "sessdata_override"
         case yuttoTimeout = "yutto_timeout"
+        case dedupSync = "dedup_sync"
         case yutto
         case downie
     }
@@ -155,6 +159,7 @@ public struct AppConfig: Codable, Sendable, Equatable {
         subscriptionInterval = c.value(.subscriptionInterval, d.subscriptionInterval)
         sessdataOverride = c.value(.sessdataOverride, d.sessdataOverride)
         yuttoTimeout = c.value(.yuttoTimeout, d.yuttoTimeout)
+        dedupSync = c.value(.dedupSync, d.dedupSync)
         yutto = c.value(.yutto, d.yutto)
         downie = c.value(.downie, d.downie)
     }

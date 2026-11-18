@@ -16,8 +16,12 @@ public actor TaskStore {
 
     // MARK: - 去重与入队
 
+    /// 去重键全集 = 任务表里的键 ∪ 跨设备清单导入的键。
+    /// 两者都要参与去重，否则新机导入旧键后仍会把 links.txt 里的残留行当新链接下载。
     public func knownKeys() throws -> Set<String> {
-        Set(try database.query("SELECT task_key FROM tasks;").compactMap { $0.text("task_key") })
+        var keys = Set(try database.query("SELECT task_key FROM tasks;").compactMap { $0.text("task_key") })
+        keys.formUnion(try database.query("SELECT key FROM known_keys;").compactMap { $0.text("key") })
+        return keys
     }
 
     /// 已存在同名 key 则返回 nil。
@@ -91,6 +95,39 @@ public actor TaskStore {
             )
             return database.lastInsertRowID
         }
+    }
+
+    /// 从跨设备去重清单批量导入键到 `known_keys`。已存在（无论来自 tasks 还是本表）一律跳过。
+    /// 只占去重键，不建任务、不进队列、不触发下载。
+    /// - Returns: 本次真正新增的条数。
+    @discardableResult
+    public func importKnownKeys(_ keys: Set<String>) throws -> Int {
+        guard !keys.isEmpty else { return 0 }
+        let now = Date().timeIntervalSince1970
+        return try database.transaction {
+            let existing = try Self.allDedupKeys(database)
+            var inserted = 0
+            for key in keys.sorted() where !key.isEmpty {
+                if existing.contains(key) { continue }
+                try database.run(
+                    "INSERT OR IGNORE INTO known_keys (key, imported_at) VALUES (?, ?);",
+                    [.text(key), .double(now)]
+                )
+                inserted += 1
+            }
+            return inserted
+        }
+    }
+
+    /// 库里来自跨设备清单的键数（给设置页显示同步状态）。
+    public func syncedKeyCount() throws -> Int {
+        Int(try database.queryOne("SELECT COUNT(*) AS n FROM known_keys;")?.int("n") ?? 0)
+    }
+
+    private static func allDedupKeys(_ database: SQLiteDatabase) throws -> Set<String> {
+        var keys = Set(try database.query("SELECT task_key FROM tasks;").compactMap { $0.text("task_key") })
+        keys.formUnion(try database.query("SELECT key FROM known_keys;").compactMap { $0.text("key") })
+        return keys
     }
 
     // MARK: - 领取与收尾

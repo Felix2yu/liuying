@@ -247,7 +247,7 @@ final class TaskStoreTests: XCTestCase {
         let tables = try db.query(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
         ).compactMap { $0.text("name") }
-        XCTAssertEqual(tables, ["meta", "subscriptions", "task_outputs", "tasks"])
+        XCTAssertEqual(tables, ["known_keys", "meta", "subscriptions", "task_outputs", "tasks"])
     }
 
     func testRetryDelayIsExponentialAndLongerForRiskControl() {

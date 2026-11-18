@@ -296,7 +296,17 @@ final class DownieConfigTests: XCTestCase {
 
     func testMissingKeyFallsBackToDefault() throws {
         let json = #"{"poll_interval": 20}"#
-        XCTAssertTrue(try AppConfig.decode(fromJSON: Data(json.utf8)).pasteShortcut)
+        let config = try AppConfig.decode(fromJSON: Data(json.utf8))
+        XCTAssertTrue(config.pasteShortcut)
+        XCTAssertTrue(config.dedupSync, "旧配置缺键时去重同步默认开启")
+    }
+
+    func testDedupSyncSurvivesRoundTrip() throws {
+        var config = AppConfig()
+        XCTAssertTrue(config.dedupSync)
+        config.dedupSync = false
+        let decoded = try AppConfig.decode(fromJSON: config.encodedJSON())
+        XCTAssertFalse(decoded.dedupSync)
     }
 
     func testDownieImportSource() {

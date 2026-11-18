@@ -15,6 +15,10 @@ public struct EngineSnapshot: Sendable, Equatable {
     public var linkStatusHealthy = true
     public var pendingPruneCount = 0
     public var pruneFailure: String?
+    /// 跨设备去重同步：清单里的键数、上次导入/导出的结果描述。
+    public var syncEnabled = true
+    public var syncedKeyCount = 0
+    public var syncStatusText: String?
     public var recent: [DownloadTask] = []
     /// 快照里最多带多少条历史；队列页可「加载更多」把它抬高。
     public var recentLimit = 30

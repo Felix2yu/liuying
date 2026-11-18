@@ -2,10 +2,20 @@ import Foundation
 
 /// schema 版本化。`PRAGMA user_version` 门控，迁移按序执行。
 public enum Schema {
-    public static let currentVersion: Int32 = 2
+    public static let currentVersion: Int32 = 3
 
     /// 下标 0 对应版本 1。
-    static let migrations: [String] = [v1, v2]
+    static let migrations: [String] = [v1, v2, v3]
+
+    /// v3：跨设备去重清单导入的键。独立成表而不是塞进 tasks，
+    /// 避免新机启动时在队列里冒出几百条没有产出文件的「已完成」占位记录。
+    /// 去重时 knownKeys() 取 tasks.task_key ∪ known_keys.key。
+    static let v3 = """
+    CREATE TABLE IF NOT EXISTS known_keys (
+        key         TEXT PRIMARY KEY,
+        imported_at REAL NOT NULL
+    );
+    """
 
     /// v2：失败重试的退避时间戳。旧库升级用 ALTER TABLE，新库先走 v1 再补列。
     /// `claim` 只领取 next_retry_at 为空或已到点的 pending 任务。

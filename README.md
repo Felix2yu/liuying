@@ -6,6 +6,7 @@ iPhone 快捷指令 → iCloud Drive → Mac 常驻 → 自动下载 B 站视频
 - 编码优先级 **av1 > hevc > avc**，画质按大会员权限取可得最高档
 - 下载后按编码自动 remux：av1 → mkv、hevc → mov、avc → mp4；无损音轨装不进 mp4/mov 时退回 mkv
 - 只有 yutto 确实产出文件、且链接来自 links.txt 时才删掉对应行（其余行逐字节保留）；Downie 是异步入队，不删行，避免「没下成但链接没了」
+- **跨设备去重**：已入队链接的去重键写进 links.txt 同目录的 `liuying-known-keys.txt`，随 iCloud 同步；新机启动先导入清单再采集 links.txt，因此换机不会把旧视频全部重下一遍（详见下方「跨设备去重同步」）
 - 失败按指数退避重试（普通 30s 起、412 风控 300s 起），不会在同一轮里连打 3 次
 - 交给 Downie 的任务进「已交给 Downie」状态，确认下载完成后手动标记，期间不删 links.txt
 - 除 iCloud 链接文件外，还支持手动粘贴、剪贴板监听、UP 主订阅追更
@@ -111,6 +112,27 @@ liuyingctl bili sign <mid>           # 打印 arc/search 的签名中间量
 
 ---
 
+## 跨设备去重同步
+
+换到新 Mac 时 `state.db` 是空的，而 iCloud 的 links.txt 里可能还残留着大量已下载过的链接行
+（例如下载被中断没删成行、或 Downie 任务）。空库采集时这些旧行会被全部当成新链接下载。
+解决办法是把「去重记忆」也跟着 iCloud 走：
+
+- 每个成功入队的链接，其去重键会被写进 **links.txt 同目录**的 `liuying-known-keys.txt`
+  （纯文本，每行一个键）。文件和 links.txt 在同一个 iCloud 容器里，自动同步到新机。
+- 新机启动后、**采集 links.txt 并去重入队之前**，先把清单里的键导进本地库（存在独立的
+  `known_keys` 表，不建任务、不进队列），之后 `knownKeys()` 会把这些键和任务表的键一起算进去。
+  于是旧行被挡住，只有新加的那一条会下载。
+- 两台 Mac 同时写时取**并集**：写入前先读现有清单合并，绝不删掉文件里已有的键，因此不会
+  互相覆盖。读写都带死线，iCloud 占位符/TCC 待授权时不会卡住引擎。
+- 清单只含去重键，不含视频文件，也不含产出路径；视频库始终按磁盘扫描建立。
+
+开关在「设置 → 高级 → 跨设备去重同步」，默认开启。该区还能看到清单真实路径、已导入键数，
+并可手动「从清单导入」/「导出到清单」（例如某台机器错过同步后补一次）。
+
+> 为什么不直接同步 `state.db`：SQLite 的 WAL/-shm 与 iCloud 的逐文件同步、冲突副本机制不兼容，
+> 多机同写极易损坏数据库。清单是只增、可并集合并的纯文本，天然抗冲突。
+
 ## 数据位置
 
 | 内容 | 路径 |
@@ -121,6 +143,7 @@ liuyingctl bili sign <mid>           # 打印 arc/search 的签名中间量
 | 备份 | `~/Library/Application Support/LiuYing/backups/` |
 | 临时工作目录 | `~/Library/Application Support/LiuYing/work/task-<id>` |
 | 配置 | `~/Library/Preferences/im.yufei.liuying.plist` |
+| 去重键清单（随 iCloud 同步） | 与监听的 links.txt 同目录，文件名 `liuying-known-keys.txt` |
 
 ---
 

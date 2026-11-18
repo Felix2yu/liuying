@@ -20,6 +20,10 @@ struct AdvancedPane: View {
     @State private var resetMessage: String?
     @State private var pruning = false
 
+    @State private var syncMessage: String?
+    @State private var syncInfo: (path: String, synced: Int, known: Int)?
+    @State private var syncing = false
+
     var body: some View {
         Form {
             Section("诊断") {
@@ -99,6 +103,37 @@ struct AdvancedPane: View {
                 }
             }
 
+            Section("跨设备去重同步") {
+                Toggle("换机时避免重复下载已下过的视频", isOn: bind(env, \.dedupSync))
+                Text("开启后，已入队链接的去重键会写进 links.txt 同目录的清单，随 iCloud 同步；新机启动先导入清单，再把 links.txt 里的剩余链接入队，因此不会把旧视频全部重下一遍。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Button(syncing ? "处理中…" : "从清单导入") { runSync(export: false) }
+                        .controlSize(.small)
+                        .disabled(syncing)
+                    Button(syncing ? "处理中…" : "导出到清单") { runSync(export: true) }
+                        .controlSize(.small)
+                        .disabled(syncing)
+                    if syncing { ProgressView().controlSize(.small) }
+                }
+                if let syncInfo {
+                    Text("清单：\(syncInfo.path)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    Text("已导入 \(syncInfo.synced) 个键 · 本机去重键共 \(syncInfo.known) 个")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let syncMessage {
+                    Text(syncMessage).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("清单只含去重键，不含视频文件；两台 Mac 同时写入会取并集，不会互相覆盖。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("配置") {
                 Button("恢复默认设置…", role: .destructive) { showResetConfirm = true }
                     .controlSize(.small)
@@ -111,7 +146,10 @@ struct AdvancedPane: View {
             }
         }
         .formStyle(.grouped)
-        .task { await refreshLegacy() }
+        .task {
+            await refreshLegacy()
+            await refreshSyncInfo()
+        }
         .confirmationDialog(
             "停用旧版 Python 服务？",
             isPresented: $showRetireConfirm,
@@ -177,6 +215,26 @@ struct AdvancedPane: View {
 
     private func refreshLegacy() async {
         legacyStatus = await LegacyService.status()
+    }
+
+    private func refreshSyncInfo() async {
+        guard let engine = env.engine else { return }
+        let info = await engine.syncInfo()
+        syncInfo = (info.path, info.syncedCount, info.knownCount)
+    }
+
+    private func runSync(export: Bool) {
+        guard !syncing else { return }
+        syncing = true
+        Task {
+            defer { syncing = false }
+            guard let engine = env.engine else { return }
+            let result = export
+                ? await engine.exportSyncedKeysNow()
+                : await engine.importSyncedKeysNow()
+            syncMessage = result.message
+            await refreshSyncInfo()
+        }
     }
 
     private func retireLegacy() {

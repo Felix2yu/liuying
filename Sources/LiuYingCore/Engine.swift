@@ -106,6 +106,12 @@ public actor Engine {
     private var pruneFailures = 0
     private var nextPruneAllowedAt = Date.distantPast
 
+    /// 跨设备去重同步。导入只在启动后第一轮做一次（幂等）；导出在新键入队时累积、轮末写回。
+    private var didImportSyncedKeys = false
+    private var pendingSyncKeys: Set<String> = []
+    private var syncFailures = 0
+    private var nextSyncAllowedAt = Date.distantPast
+
     /// - Parameter biliClient: 由 App 层注入，与订阅轮询器**共用同一个实例**。
     ///   两个独立实例时改 SESSDATA 只会更新引擎里的那个，订阅仍拿旧凭据被 412 风控。
     public init(
@@ -231,6 +237,7 @@ public actor Engine {
                 _ = try await processOnce()
             }
             await flushPrune()
+            await flushSync()
             if pendingStateWrites.isEmpty {
                 snapshot.lastError = nil
             } else {
@@ -255,6 +262,9 @@ public actor Engine {
     private func ingestOnce() async throws -> Int {
         var added = 0
         let urls = await linkSource.collect()
+        // collect() 已跑完自动发现，此刻 path 才是真实链接文件所在目录。
+        // 必须在本轮 enqueue 之前把旧机的键导进来，否则空库会把残留行全当下单。
+        await importSyncedKeysIfNeeded()
         added += try await enqueue(urls: urls, source: .icloud).added
 
         if config.clipboardMonitor {
@@ -302,6 +312,7 @@ public actor Engine {
                 known.insert(key)
                 outcome.added += 1
                 outcome.addedIDs.append(id)
+                if config.dedupSync { pendingSyncKeys.insert(key) }
                 Log.info("新链接入队：\(url)（键 \(key)，来源 \(source.displayName)）")
                 if config.notify {
                     await notifier.taskAdded(title: video?.title ?? key, url: url)
@@ -663,6 +674,142 @@ public actor Engine {
         await publish()
     }
 
+    // MARK: - 跨设备去重同步
+
+    /// 启动后只导入一次清单。清单读失败不置位，下一轮重试；「文件不存在」是正常的新用户态，
+    /// 置位跳过，避免每轮 stat。幂等：重复导入同一个键会被 store 跳过。
+    private func importSyncedKeysIfNeeded() async {
+        guard config.dedupSync, !didImportSyncedKeys else { return }
+        // 路径还没自动发现成功时别用占位路径乱读，等下一轮 collect 拿到真实目录。
+        guard (await linkSource.status).isHealthy else { return }
+
+        let path = KnownKeySync.manifestPath(forLinkFile: await linkSource.path)
+        let result = await KnownKeySync.read(path: path)
+        switch result {
+        case .keys(let keys):
+            didImportSyncedKeys = true
+            do {
+                let added = try await store.importKnownKeys(keys)
+                snapshot.syncedKeyCount = try await store.syncedKeyCount()
+                let text = keys.isEmpty
+                    ? "跨设备去重清单为空"
+                    : "已导入跨设备去重清单：\(keys.count) 个键（新增 \(added)）"
+                snapshot.syncStatusText = text
+                Log.info(text)
+            } catch {
+                snapshot.syncStatusText = "导入去重清单失败：\(error.localizedDescription)"
+                Log.warning(snapshot.syncStatusText ?? "")
+            }
+        case .missing:
+            didImportSyncedKeys = true
+            snapshot.syncStatusText = "跨设备去重清单尚未建立"
+            Log.info("跨设备去重清单不存在，跳过导入：\(path)")
+        case .failed(let message):
+            // 不置位，下一轮重试；不标红 entire round，只更新同步状态文案。
+            snapshot.syncStatusText = "读取去重清单失败，将重试：\(message)"
+            Log.warning(snapshot.syncStatusText ?? "")
+        }
+    }
+
+    /// 轮末把累积的新键写回清单（并集合并，不动文件里已有的键）。
+    private func flushSync() async {
+        guard config.dedupSync, !pendingSyncKeys.isEmpty else { return }
+        guard Date() >= nextSyncAllowedAt else { return }
+        guard (await linkSource.status).isHealthy else { return }
+
+        let keys = pendingSyncKeys
+        let path = KnownKeySync.manifestPath(forLinkFile: await linkSource.path)
+        let result = await KnownKeySync.addKeys(keys, to: path)
+        switch result {
+        case .written(let count):
+            // 只清掉本次成功写出的键：失败期间新入队的键要留着下轮重试。
+            pendingSyncKeys.subtract(keys)
+            syncFailures = 0
+            snapshot.syncedKeyCount = (try? await store.syncedKeyCount()) ?? 0
+            snapshot.syncStatusText = "去重清单已更新：共 \(count) 个键"
+        case .failed(let message):
+            snapshot.syncStatusText = "写入去重清单失败：\(message)"
+            syncFailures += 1
+            if syncFailures >= 3 {
+                nextSyncAllowedAt = Date().addingTimeInterval(300)
+                syncFailures = 0
+                Log.warning("去重清单写入连续失败，退避 5 分钟")
+            }
+        }
+    }
+
+    /// 设置页手动触发：把当前全部去重键导出到清单（覆盖式并集，不丢文件里已有的键）。
+    public func exportSyncedKeysNow() async -> KnownKeySync.ActionResult {
+        guard (await linkSource.status).isHealthy else {
+            return KnownKeySync.ActionResult(
+                ok: false, count: 0, message: "链接文件路径不可用，请检查 iCloud 访问"
+            )
+        }
+        let keys = (try? await store.knownKeys()) ?? []
+        guard !keys.isEmpty else {
+            return KnownKeySync.ActionResult(ok: false, count: 0, message: "当前没有可导出的去重键")
+        }
+        let path = KnownKeySync.manifestPath(forLinkFile: await linkSource.path)
+        let result = await KnownKeySync.addKeys(keys, to: path)
+        switch result {
+        case .written(let count):
+            pendingSyncKeys.removeAll()
+            snapshot.syncedKeyCount = (try? await store.syncedKeyCount()) ?? 0
+            snapshot.syncStatusText = "去重清单已更新：共 \(count) 个键"
+            await publish()
+            return KnownKeySync.ActionResult(ok: true, count: count, message: snapshot.syncStatusText ?? "")
+        case .failed(let message):
+            snapshot.syncStatusText = "导出失败：\(message)"
+            await publish()
+            return KnownKeySync.ActionResult(ok: false, count: 0, message: message)
+        }
+    }
+
+    /// 设置页手动触发：从清单重新导入一次（幂等）。
+    @discardableResult
+    public func importSyncedKeysNow() async -> KnownKeySync.ActionResult {
+        guard (await linkSource.status).isHealthy else {
+            return KnownKeySync.ActionResult(
+                ok: false, count: 0, message: "链接文件路径不可用，请检查 iCloud 访问"
+            )
+        }
+        let path = KnownKeySync.manifestPath(forLinkFile: await linkSource.path)
+        let result = await KnownKeySync.read(path: path)
+        switch result {
+        case .keys(let keys):
+            do {
+                let added = try await store.importKnownKeys(keys)
+                didImportSyncedKeys = true
+                snapshot.syncedKeyCount = try await store.syncedKeyCount()
+                snapshot.syncStatusText = "导入完成：清单 \(keys.count) 个键，新增 \(added)"
+                await publish()
+                return KnownKeySync.ActionResult(ok: true, count: added, message: snapshot.syncStatusText ?? "")
+            } catch {
+                let message = "导入失败：\(error.localizedDescription)"
+                snapshot.syncStatusText = message
+                await publish()
+                return KnownKeySync.ActionResult(ok: false, count: 0, message: message)
+            }
+        case .missing:
+            let message = "找不到去重清单文件"
+            snapshot.syncStatusText = message
+            await publish()
+            return KnownKeySync.ActionResult(ok: false, count: 0, message: message)
+        case .failed(let message):
+            snapshot.syncStatusText = "读取失败：\(message)"
+            await publish()
+            return KnownKeySync.ActionResult(ok: false, count: 0, message: message)
+        }
+    }
+
+    /// 设置页显示清单真实路径与当前统计。
+    public func syncInfo() async -> (path: String, syncedCount: Int, knownCount: Int) {
+        let path = KnownKeySync.manifestPath(forLinkFile: await linkSource.path)
+        let synced = (try? await store.syncedKeyCount()) ?? 0
+        let known = (try? await store.knownKeys().count) ?? 0
+        return (path, synced, known)
+    }
+
     // MARK: - 队列操作
 
     public func retry(taskID: Int64) async {
@@ -701,6 +848,10 @@ public actor Engine {
         // collect() 会提交文件签名，返回值绝不能丢：启动时这个方法与主循环并行跑，
         // 旧实现把采到的链接直接扔掉，签名却已更新 → 那些链接再也不会被采集。
         let urls = await linkSource.collect()
+        // 这个方法在启动时与主循环并行跑，可能先于首轮 ingest 完成。
+        // 若不在入队前导入清单，空库会把 links.txt 的残留行全当下单（正是换机的 bug）。
+        // importSyncedKeysIfNeeded 有一次性幂等门控，两个入口重复调用安全。
+        await importSyncedKeysIfNeeded()
         if !urls.isEmpty {
             do {
                 _ = try await enqueue(urls: urls, source: .icloud)
@@ -733,6 +884,7 @@ public actor Engine {
     private func publish() async {
         var next = snapshot
         next.isPaused = paused
+        next.syncEnabled = config.dedupSync
         next.pendingPruneCount = pendingPrune.count
         next.currentLog = logTail.snapshot
         if let stats = try? await store.stats() { next.stats = stats }
