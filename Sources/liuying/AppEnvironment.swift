@@ -165,7 +165,7 @@ final class AppEnvironment {
         await engine?.stop()
     }
 
-    /// 配置改动后同步给引擎（轮询间隔、路径、yutto 参数都要立刻生效）。
+    /// 配置改动后同步给引擎（轮询间隔、路径、bili-dl 参数都要立刻生效）。
     func pushConfigToEngine() async {
         guard let engine else { return }
         await engine.updateConfig(configStore.config)

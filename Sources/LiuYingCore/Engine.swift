@@ -152,8 +152,8 @@ public actor Engine {
     public static func resolveSessdata(_ config: AppConfig) -> String? {
         AuthFile.resolveSessdata(
             override: config.sessdataOverride,
-            path: config.yutto.authFile,
-            profile: config.yutto.authProfile
+            path: config.biliDL.authFile,
+            profile: config.biliDL.authProfile
         )
     }
 
@@ -524,7 +524,7 @@ public actor Engine {
                 Log.info("已交给 Downie，等待用户确认完成：\(display)")
             } else {
                 // 只有「确实来自 links.txt + 后端确认了产出文件」才删行。
-                // 手动/剪贴板/订阅任务的 URL 不在文件里；yutto 零产出也没证明下载成功。
+                // 手动/剪贴板/订阅任务的 URL 不在文件里；bili-dl 零产出也没证明下载成功。
                 if task.source == .icloud, result.safeToPrune {
                     markPrune(task.rawURL, task.taskKey)
                 }
@@ -607,9 +607,9 @@ public actor Engine {
         let downloadDir = AppIdentity.expand(config.downloadDir)
         try? FileManager.default.createDirectory(atPath: downloadDir, withIntermediateDirectories: true)
         switch config.backend(for: url) {
-        case .yutto:
-            return YuttoBackend(
-                config: config.yutto, downloadDir: downloadDir,
+        case .biliDL:
+            return BiliDlBackend(
+                config: config.biliDL, downloadDir: downloadDir,
                 timeout: TimeInterval(Self.effectiveTimeout(config))
             )
         case .downie:
@@ -622,7 +622,7 @@ public actor Engine {
         if let raw = ProcessInfo.processInfo.environment["BILI_WATCHER_TIMEOUT"], let value = Int(raw), value > 0 {
             return value
         }
-        return config.yuttoTimeout
+        return config.biliDLTimeout
     }
 
     // MARK: - 删链接

@@ -2,7 +2,7 @@ import Foundation
 
 /// 按视频编码把成品规整到目标容器。
 ///
-/// yutto 用 `--output-format mp4` 时，av1 会被装进 mp4；但本机播放体验与编码优先级都更偏向
+/// `--output-format mp4` 时，av1 会被装进 mp4；但本机播放体验与编码优先级都更偏向
 /// 「av1 → mkv、hevc → mov、avc → mp4」。另外 mp4/mov 装不下 FLAC/ALAC 等无损音轨，
 /// 这时必须退回 mkv 才能保留无损。
 public enum ContainerPolicy {

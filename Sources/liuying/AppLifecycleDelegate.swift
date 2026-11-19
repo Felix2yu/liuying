@@ -78,7 +78,7 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     /// 允许系统恢复窗口位置与尺寸（HIG Windows）。
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
 
-    /// 终止前先停引擎并等子进程退出：直接退出会留下孤儿 yutto 进程、
+    /// 终止前先停引擎并等子进程退出：直接退出会留下孤儿 bili-dl 进程、
     /// downloading 状态的任务行和 work/task-* 临时目录。
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isTerminating else { return .terminateLater }

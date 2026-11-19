@@ -1,12 +1,12 @@
 import Foundation
 
-/// 构造 yutto 的 argv。顺序严格对齐旧版 Python 的 build_args（456–494 行），
-/// 因为 yutto 对同名参数后者覆盖前者，顺序会影响最终取值。
+/// 构造 bili-dl 的 argv。bili-dl 被改造成接受 yutto 的整套参数（未知参数静默忽略），
+/// 因此这里的顺序与旧版 yutto 的 build_args 保持一致，配置也复用同一语义。
 ///
 /// 纯函数：auth 文件是否存在由调用方注入，测试不需要碰文件系统。
-public enum YuttoArgs {
+public enum BiliDlArgs {
     public static func build(
-        config: YuttoConfig,
+        config: BiliDlConfig,
         url: String,
         downloadDir: String,
         workDir: String? = nil,
@@ -22,6 +22,8 @@ public enum YuttoArgs {
 
         args += [url, "-d", downloadDir, "--no-progress", "--no-color"]
 
+        // --tmp-dir 是 yutto 兼容参数；bili-dl 的宽松解析器接受但不改动产物落点
+        // （产物一律进 -d，由 FileSnapshot 差集发现）。保留以对齐 yutto argv 契约。
         if let workDir {
             args += ["--tmp-dir", workDir]
         }

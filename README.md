@@ -5,7 +5,7 @@ iPhone 快捷指令 → iCloud Drive → Mac 常驻 → 自动下载 B 站视频
 
 - 编码优先级 **av1 > hevc > avc**，画质按大会员权限取可得最高档
 - 下载后按编码自动 remux：av1 → mkv、hevc → mov、avc → mp4；无损音轨装不进 mp4/mov 时退回 mkv
-- 只有 yutto 确实产出文件、且链接来自 links.txt 时才删掉对应行（其余行逐字节保留）；Downie 是异步入队，不删行，避免「没下成但链接没了」
+- 只有 bili-dl 确实产出文件、且链接来自 links.txt 时才删掉对应行（其余行逐字节保留）；Downie 是异步入队，不删行，避免「没下成但链接没了」
 - **跨设备去重**：已入队链接的去重键写进 links.txt 同目录的 `liuying-known-keys.txt`，随 iCloud 同步；新机启动先导入清单再采集 links.txt，因此换机不会把旧视频全部重下一遍（详见下方「跨设备去重同步」）
 - 失败按指数退避重试（普通 30s 起、412 风控 300s 起），不会在同一轮里连打 3 次
 - 交给 Downie 的任务进「已交给 Downie」状态，确认下载完成后手动标记，期间不删 links.txt
@@ -17,7 +17,7 @@ iPhone 快捷指令 → iCloud Drive → Mac 常驻 → 自动下载 B 站视频
 
 | 链接 | 后端 | 默认 |
 | --- | --- | --- |
-| `b23.tv` / `bilibili.com` / `bilibili.tv` | yutto | yutto |
+| `b23.tv` / `bilibili.com` / `bilibili.tv` | bili-dl（内嵌） | bili-dl（内嵌） |
 | 其它一切 http(s) 链接 | Downie | Downie |
 
 两个方向都能在「设置 → Downie → 路由」里改。后端在**任务开始下载那一刻**按当前设置选定，排队中的任务改设置后会跟着换。
@@ -31,8 +31,15 @@ iPhone 快捷指令 → iCloud Drive → Mac 常驻 → 自动下载 B 站视频
 ## 构建与安装
 
 ```bash
-swift build && swift test          # 219 个单测
-./build-app.sh                     # 产出 .build/release/流影.app
+swift build && swift test          # 238 个单测
+./build-app.sh                     # 产出 .build/release/流影.app（含内嵌 bili-dl）
+```
+
+`build-app.sh` 会先编译 Swift，再从 `BILI_DL_SRC`（默认 `/Users/yufei/Git/bili-dl`）
+用 Go 编译 bili-dl，拷进 `.app/Contents/MacOS/` 并一起签名。源码在别处时用环境变量指定：
+
+```bash
+BILI_DL_SRC=/path/to/bili-dl ./build-app.sh
 ```
 
 安装（`/Applications` 对 admin 组可写，**不需要 sudo**）：
@@ -84,9 +91,9 @@ App 内「设置 → 通用 → iCloud 访问 → 打开系统设置」有直达
 菜单栏图标常驻，关掉窗口也继续轮询。
 
 - **视频库**：扫下载目录，按 UP 主分组筛选；点一行就地展开缩略图与详情，可播放（mkv/AV1 可用 IINA）、访达中显示、复制路径、删除。
-- **队列**：待处理 / 下载中 / 已完成 / 失败 / 已取消 / 已交给 Downie；展开当前任务能看实时 yutto 日志。取消是终态，需要时在队列里点「重新下载」；退避中的任务会显示下次重试时间。默认显示最近 30 条，底部「加载更多历史」可逐次翻到更早的记录。手动添加后会显示新增／去重明细，并提供「撤销本次添加」（已开跑的不撤销）。
+- **队列**：待处理 / 下载中 / 已完成 / 失败 / 已取消 / 已交给 Downie；展开当前任务能看实时 bili-dl 日志。取消是终态，需要时在队列里点「重新下载」；退避中的任务会显示下次重试时间。默认显示最近 30 条，底部「加载更多历史」可逐次翻到更早的记录。手动添加后会显示新增／去重明细，并提供「撤销本次添加」（已开跑的不撤销）。
 - **订阅**：填 UP 主 UID 自动追更。**首次同步只记录水位，不下载历史投稿**；要补看用「导入最近 5 条」。连续 3 次失败会自动停用（风控熔断）。
-- **设置**：主窗口工具栏齿轮或菜单栏「设置…」都能打开；四个 tab 分别管路径与轮询、yutto 参数、Downie、以及高级项（SESSDATA、旧服务、一次性清理链接文件、日志目录、恢复默认设置）。通用页会显示下载目录实际解析结果、通知授权状态。
+- **设置**：主窗口工具栏齿轮或菜单栏「设置…」都能打开；四个 tab 分别管路径与轮询、bili-dl 参数、Downie、以及高级项（SESSDATA、旧服务、一次性清理链接文件、日志目录、恢复默认设置）。通用页会显示下载目录实际解析结果、通知授权状态。
 - **菜单栏**：展开菜单能看到启动失败、引擎未运行、上一轮检查时间与清理错误；引擎未就绪时相关命令置灰，不会点了没反应。点「✓ 最近完成」会按任务产出文件路径跳到视频库对应条目。「导入 Downie 下载记录…」在这里，与主窗口工具栏的「+」各自独立。
 - **快捷键**：主窗口聚焦时按 ⌘V，直接把剪贴板里的链接加入下载队列；在输入框里按 ⌘V 仍是普通粘贴。开关在「设置 → 通用 → 行为」。
 
@@ -99,7 +106,7 @@ liuyingctl doctor                    # 环境自检（依赖解析、SQLite）
 liuyingctl status                    # 任务库统计 + 最近记录
 liuyingctl config show               # 当前配置
 liuyingctl config set watch_file ""   # 改配置（重启 App 生效）
-liuyingctl test <url> [额外 yutto 参数…]   # 直接下一单，绕过采集与去重
+liuyingctl test <url> [额外 bili-dl 参数…]   # 直接下一单，绕过采集与去重
 liuyingctl legacy status|retire|restore
 liuyingctl bili smoke <BV>           # 实网检查：nav / view / arc-search
 liuyingctl bili sign <mid>           # 打印 arc/search 的签名中间量
@@ -190,7 +197,7 @@ XML 语法错误、文件里没有 http(s) 链接。
 4. 按键是纯 ⌘V —— ⌘⇧V / ⌘⌥V / ⌃⌘V 一律放行；
 5. 剪贴板里至少有一个 http(s) 链接。
 
-命中后走既有 `addManual` 流程：B 站四个主机走 yutto，其它 http(s) 链接按当前路由走 Downie；
+命中后走既有 `addManual` 流程：B 站四个主机走 bili-dl，其它 http(s) 链接按当前路由走 Downie；
 b23.tv 短链、分享文案里夹着的链接都认；⌘V 只负责入队，仍由引擎串行下载。
 底部会显示一条自动消失的提示，带「撤销」按钮（已开跑的不撤销）。
 
@@ -205,11 +212,11 @@ b23.tv 短链、分享文案里夹着的链接都认；⌘V 只负责入队，�
 
 ## 已知限制
 
-- **remux 之后 yutto 认不出已有文件**：我们把 yutto 产出的 `.mp4` remux 成 `.mkv`，
-  下次同一个视频再入队时 yutto 看不到预期的 mp4，会重新下载一遍。
+- **remux 之后 bili-dl 认不出已有文件**：我们把 bili-dl 产出的 `.mp4` remux 成 `.mkv`，
+  下次同一个视频再入队时 bili-dl 看不到预期的 mp4，会重新下载一遍。
   正常的去重靠状态库的 BV 键，所以只有「手动 test」或换库后才会遇到。
-- **多 P 命名**：yutto 的规则是 P1 无后缀、P2 起 `标题 (1).mkv`。库里会把后缀解析成页码，但页码从 1 开始对应 P2。
-- **订阅追更依赖 SESSDATA**：`arc/search` 匿名访问会被 412 风控。程序从 yutto 的
+- **多 P 命名**：bili-dl 沿用的规则是 P1 无后缀、P2 起 `标题 (1).mkv`。库里会把后缀解析成页码，但页码从 1 开始对应 P2。
+- **订阅追更依赖 SESSDATA**：`arc/search` 匿名访问会被 412 风控。程序从 bili-dl 共用的
   `~/.config/yutto/auth.toml` 读 `[profiles.default].sessdata`，并在被 ban 时换新签名重试最多 3 次。
 - **Downie 不会自己开始下载**：`downie://` 只支持 `url` / `postprocessing` / `destination` /
   `action` / `title` 五个参数（Downie 自带帮助的 Automation 一节），**没有「立刻开始」这种参数**。
@@ -220,7 +227,7 @@ b23.tv 短链、分享文案里夹着的链接都认；⌘V 只负责入队，�
   所以这类任务进「已交给 Downie」状态，实际进度要去 Downie 里看；确认文件下好后
   在队列里点「已下载，标记完成」，此时才转为「已完成」。确认前**不会从 links.txt 删行**，
   也不会自动重试；需要重新交给 Downie 时点「重新下载」。
-- yutto 退出码 0 但没有产出文件时按失败处理（可重试），不再显示成「已完成」却什么都没有。
+- bili-dl 退出码 0 但没有产出文件时按失败处理（可重试），不再显示成「已完成」却什么都没有。
 - **通知**需要用户授权；未授权时只在日志里写一条。在「设置 → 通用 → 通知」可查看系统授权状态、重新检测、请求授权或打开系统设置；系统侧改过权限后切回 App 也会自动刷新。
 - **Downie 历史不能静默同步**：导出文件要用户在 Downie 里手动生成并选一次；本应用不读它的沙盒容器，也不订阅 CloudKit 变化。导入的记录表示「Downie 里下过」，不校验本机文件是否还在。
 - **⌘V 只作用于主窗口**，且只认 http(s) 链接：裸 BV 号、`ftp://`、`file://`、`mailto:` 都不会触发（与「添加链接…」一致）。剪贴板里贴一整份导出 XML 会把其中所有链接入队，批量导入请用菜单里的导入入口。
@@ -236,6 +243,6 @@ b23.tv 短链、分享文案里夹着的链接都认；⌘V 只负责入队，�
 | 手机写了文件但没反应 | 看日志里「监听链接文件：」的真实路径；iCloud 同步本身有延迟 |
 | 画质只有 360P/480P | 没登录。检查 auth.toml 是否存在、SESSDATA 是否过期 |
 | 订阅一直失败 | `liuyingctl bili smoke <某个BV>` 确认网络与登录态 |
-| 找不到 yutto | `liuyingctl doctor` 看解析结果；在设置里填绝对路径 |
+| 找不到 bili-dl | `liuyingctl doctor` 看解析结果；确认 .app 内嵌完整，或在设置里填绝对路径 |
 | 导入 Downie 记录提示「格式不匹配」 | 确认选的是 Downie 导出的 XML / CSV / TXT，不是 JSON、二进制或别的 App 配置；导出时别勾「包含预览图」 |
 | ⌘V 没反应 | 确认主窗口是焦点窗口、没有弹层、光标不在输入框里，且「设置 → 通用 → 行为」的开关是开的；剪贴板里必须有 http(s) 链接 |

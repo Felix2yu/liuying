@@ -1,7 +1,7 @@
 import Foundation
 
-/// 下载目录的文件集快照。用「前后差集」判断 yutto 产出了什么，
-/// 因为 yutto 的文件名由 `subpath_template` 决定，脚本侧推不出来。
+/// 下载目录的文件集快照。用「前后差集」判断下载器产出了什么，
+/// 因为产物文件名由 `subpath_template` 决定，脚本侧推不出来。
 public struct FileSnapshot: Sendable, Equatable {
     public var files: Set<String>
 

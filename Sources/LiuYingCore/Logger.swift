@@ -31,7 +31,7 @@ public enum Log {
     private static let writeLock = NSLock()
     private static let fileHandle: FileHandle? = setupLogFile()
 
-    /// 调试日志开关。yutto 完整 argv 只在 debug 级别输出。
+    /// 调试日志开关。下载器完整 argv 只在 debug 级别输出。
     private final class Flag: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false

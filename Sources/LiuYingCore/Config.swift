@@ -1,20 +1,40 @@
 import Foundation
 
 public enum BackendKind: String, Codable, Sendable, CaseIterable {
-    case yutto
+    /// B 站后端：内嵌的 bili-dl（Go CLI，兼容 yutto argv）。rawValue 用带连字符的名字，
+    /// 旧配置里写的 "yutto" 由自定义解码迁移到这里。
+    case biliDL = "bili-dl"
     case downie
 
     public var displayName: String {
         switch self {
-        case .yutto: "yutto"
+        case .biliDL: "bili-dl"
         case .downie: "Downie"
         }
     }
+
+    /// 旧配置里的 `"yutto"` 平滑迁移到 bili-dl；其它未知值按损坏值抛错，
+    /// 由调用方的 `value(_:fallback:)` 回退到各自默认值。
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if raw == "yutto" {
+            self = .biliDL
+            return
+        }
+        guard let kind = BackendKind(rawValue: raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "未知后端：\(raw)"
+            )
+        }
+        self = kind
+    }
 }
 
-/// yutto 段配置。默认值逐项对齐旧版 Python 的 DEFAULT_CONFIG。
-public struct YuttoConfig: Codable, Sendable, Equatable {
-    public var binary = "yutto"
+/// bili-dl 段配置。默认值对齐原 yutto 的 DEFAULT_CONFIG，bili-dl 接受同一套 argv。
+public struct BiliDlConfig: Codable, Sendable, Equatable {
+    /// 留空 / 默认名都优先用 .app 内嵌的 bili-dl；填绝对路径可覆盖。
+    public var binary = "bili-dl"
     public var videoQuality = 127
     public var audioQuality = 30_280
     public var vcodec = "av1:copy"
@@ -25,6 +45,7 @@ public struct YuttoConfig: Codable, Sendable, Equatable {
     public var downloadDanmaku = false
     public var downloadSubtitle = false
     public var saveCover = false
+    /// bili-dl 直接读 yutto 的 auth.toml（[profiles.<name>].sessdata），保持登录态零迁移。
     public var authFile = "~/.config/yutto/auth.toml"
     public var authProfile = "default"
     public var extraArgs: [String] = []
@@ -54,7 +75,7 @@ public struct YuttoConfig: Codable, Sendable, Equatable {
     /// 手写解码：缺键或类型不对都退回默认值。旧 config.json 只有部分键，必须能读。
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let d = YuttoConfig()
+        let d = BiliDlConfig()
         binary = c.value(.binary, d.binary)
         videoQuality = c.value(.videoQuality, d.videoQuality)
         audioQuality = c.value(.audioQuality, d.audioQuality)
@@ -100,9 +121,9 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public var watchFile = ""
     public var pollInterval = 15
     public var downloadDir = "~/Downloads/Bilibili"
-    /// B 站主机（b23.tv / bilibili.com / bilibili.tv）走哪个后端。默认 yutto。
-    public var bilibiliBackend: BackendKind = .yutto
-    /// 其余 http(s) 链接走哪个后端。默认 Downie —— yutto 只认 B 站。
+    /// B 站主机（b23.tv / bilibili.com / bilibili.tv）走哪个后端。默认内嵌 bili-dl。
+    public var bilibiliBackend: BackendKind = .biliDL
+    /// 其余 http(s) 链接走哪个后端。默认 Downie —— bili-dl 只认 B 站。
     public var otherBackend: BackendKind = .downie
     public var maxTasksPerRound = 20
     public var notify = true
@@ -113,15 +134,15 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public var pasteShortcut = true
     /// UP 主订阅轮询间隔（秒）。
     public var subscriptionInterval = 1_800
-    /// 手动覆盖 SESSDATA；留空则从 yutto 的 auth.toml 读。
+    /// 手动覆盖 SESSDATA；留空则从 auth.toml 读。
     public var sessdataOverride = ""
-    /// 单次 yutto 调用超时（秒）。旧版用环境变量 BILI_WATCHER_TIMEOUT，默认 3600。
-    public var yuttoTimeout = 3_600
+    /// 单次 bili-dl 调用超时（秒）。旧版用环境变量 BILI_WATCHER_TIMEOUT，默认 3600。
+    public var biliDLTimeout = 3_600
     /// 跨设备去重同步：把已入队链接的键写进 links.txt 同目录的清单随 iCloud 同步，
     /// 新机启动先导入，避免空库把 links.txt 里的旧链接全部重新下载。
     public var dedupSync = true
 
-    public var yutto = YuttoConfig()
+    public var biliDL = BiliDlConfig()
     public var downie = DownieConfig()
 
     public init() {}
@@ -138,10 +159,14 @@ public struct AppConfig: Codable, Sendable, Equatable {
         case pasteShortcut = "paste_shortcut"
         case subscriptionInterval = "subscription_interval"
         case sessdataOverride = "sessdata_override"
-        case yuttoTimeout = "yutto_timeout"
+        case biliDLTimeout = "bili_dl_timeout"
         case dedupSync = "dedup_sync"
-        case yutto
+        case biliDL = "bili_dl"
         case downie
+
+        // 旧键：只在解码时读一次，编码一律写新键。
+        case legacyYutto = "yutto"
+        case legacyYuttoTimeout = "yutto_timeout"
     }
 
     public init(from decoder: Decoder) throws {
@@ -158,9 +183,21 @@ public struct AppConfig: Codable, Sendable, Equatable {
         pasteShortcut = c.value(.pasteShortcut, d.pasteShortcut)
         subscriptionInterval = c.value(.subscriptionInterval, d.subscriptionInterval)
         sessdataOverride = c.value(.sessdataOverride, d.sessdataOverride)
-        yuttoTimeout = c.value(.yuttoTimeout, d.yuttoTimeout)
         dedupSync = c.value(.dedupSync, d.dedupSync)
-        yutto = c.value(.yutto, d.yutto)
+
+        // 新键优先，旧键迁移：bili_dl_timeout ← yutto_timeout；bili_dl ← yutto。
+        if let timeout = c.valueOptional(.biliDLTimeout, Int.self) {
+            biliDLTimeout = timeout
+        } else {
+            biliDLTimeout = c.value(.legacyYuttoTimeout, d.biliDLTimeout)
+        }
+        if let legacy = c.valueOptional(.legacyYutto, BiliDlConfig.self) {
+            // 新段缺席时用旧 yutto 段；新段存在则用新段（下面覆盖）。
+            biliDL = legacy
+        } else {
+            biliDL = d.biliDL
+        }
+        biliDL = c.value(.biliDL, biliDL)
         downie = c.value(.downie, d.downie)
     }
 
@@ -169,20 +206,20 @@ public struct AppConfig: Codable, Sendable, Equatable {
         pollInterval = min(max(pollInterval, 5), 3_600)
         maxTasksPerRound = min(max(maxTasksPerRound, 1), 100)
         subscriptionInterval = min(max(subscriptionInterval, 60), 86_400)
-        yuttoTimeout = min(max(yuttoTimeout, 60), 86_400)
+        biliDLTimeout = min(max(biliDLTimeout, 60), 86_400)
         if downloadDir.trimmingCharacters(in: .whitespaces).isEmpty {
             downloadDir = AppConfig().downloadDir
         }
-        if yutto.vcodecPriority.isEmpty {
-            yutto.vcodecPriority = AppConfig().yutto.vcodecPriority
+        if biliDL.vcodecPriority.isEmpty {
+            biliDL.vcodecPriority = AppConfig().biliDL.vcodecPriority
         }
-        if yutto.subpathTemplate.trimmingCharacters(in: .whitespaces).isEmpty {
-            yutto.subpathTemplate = AppConfig().yutto.subpathTemplate
+        if biliDL.subpathTemplate.trimmingCharacters(in: .whitespaces).isEmpty {
+            biliDL.subpathTemplate = AppConfig().biliDL.subpathTemplate
         }
     }
 
     /// 按链接选后端：B 站四个主机之外的一切 URL 都归 downie。
-    /// 这是**路由**，不是「yutto 失败后回退」——后端在任务开始下载时按当前配置选定，
+    /// 这是**路由**，不是「失败后回退」——后端在任务开始下载时按当前配置选定，
     /// 入队后没有单独持久化，排队中的任务改设置会跟着换。
     public func backend(for url: String) -> BackendKind {
         URLExtractor.isBilibiliHost(url) ? bilibiliBackend : otherBackend
@@ -191,6 +228,26 @@ public struct AppConfig: Codable, Sendable, Equatable {
     /// 旧版 config.json 的形状，用于首次启动导入历史设置。
     public static func decode(fromJSON data: Data) throws -> AppConfig {
         try JSONDecoder().decode(AppConfig.self, from: data)
+    }
+
+    /// 手写编码：只写新键，旧键（yutto / yutto_timeout）不再输出，避免迁移后又把旧值写回去。
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(watchFile, forKey: .watchFile)
+        try c.encode(pollInterval, forKey: .pollInterval)
+        try c.encode(downloadDir, forKey: .downloadDir)
+        try c.encode(bilibiliBackend, forKey: .bilibiliBackend)
+        try c.encode(otherBackend, forKey: .otherBackend)
+        try c.encode(maxTasksPerRound, forKey: .maxTasksPerRound)
+        try c.encode(notify, forKey: .notify)
+        try c.encode(clipboardMonitor, forKey: .clipboardMonitor)
+        try c.encode(pasteShortcut, forKey: .pasteShortcut)
+        try c.encode(subscriptionInterval, forKey: .subscriptionInterval)
+        try c.encode(sessdataOverride, forKey: .sessdataOverride)
+        try c.encode(biliDLTimeout, forKey: .biliDLTimeout)
+        try c.encode(dedupSync, forKey: .dedupSync)
+        try c.encode(biliDL, forKey: .biliDL)
+        try c.encode(downie, forKey: .downie)
     }
 
     public func encodedJSON() throws -> Data {
@@ -205,10 +262,14 @@ private extension KeyedDecodingContainer {
     func value<T: Decodable>(_ key: Key, _ fallback: T) -> T {
         (try? decodeIfPresent(T.self, forKey: key)) ?? fallback
     }
+
+    func valueOptional<T: Decodable>(_ key: Key, _: T.Type) -> T? {
+        try? decodeIfPresent(T.self, forKey: key)
+    }
 }
 
-/// yutto 的画质/音质档位。数值与 yutto 2.2.0 的 `--help` 完全一致。
-public enum YuttoQuality {
+/// B 站画质/音质档位。数值与 yutto 2.2.0 的 `--help` 一致，bili-dl 接受同一套 qn/id。
+public enum BiliQuality {
     public static let videoOptions: [(value: Int, label: String)] = [
         (127, "8K"), (126, "杜比视界"), (125, "4K·HDR10"), (120, "4K"),
         (116, "1080P60"), (112, "1080P+"), (100, "智能修复"), (80, "1080P"),

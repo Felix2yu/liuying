@@ -8,7 +8,7 @@ public struct DownloadResult: Sendable {
     /// 后端原始输出（已截断），失败时用于诊断。
     public var logTail: [String]
     /// 是否真的确认了产出文件，从而允许把链接从 links.txt 删掉。
-    /// Downie 是异步入队、yutto 退出 0 但零产出都不能删——否则链接丢了就再也找不回来。
+    /// Downie 是异步入队、bili-dl 退出 0 但零产出都不能删——否则链接丢了就再也找不回来。
     public var safeToPrune: Bool
     /// 已交给外部应用（Downie），完成与否只能由用户确认，任务进 .sent 而非 .done。
     public var handedOff: Bool
@@ -38,14 +38,15 @@ public protocol DownloadBackend: Sendable {
     ) async -> DownloadResult
 }
 
-/// yutto 后端。参数构造在 `YuttoArgs`（纯函数），这里负责快照、执行与容器规整。
-public struct YuttoBackend: DownloadBackend {
-    public let name = "yutto"
-    private let config: YuttoConfig
+/// bili-dl 后端（内嵌 Go CLI，兼容 yutto argv）。参数构造在 `BiliDlArgs`（纯函数），
+/// 这里负责快照、执行、零产出判定与容器规整。
+public struct BiliDlBackend: DownloadBackend {
+    public let name = "bili-dl"
+    private let config: BiliDlConfig
     private let downloadDir: String
     private let timeout: TimeInterval
 
-    public init(config: YuttoConfig, downloadDir: String, timeout: TimeInterval) {
+    public init(config: BiliDlConfig, downloadDir: String, timeout: TimeInterval) {
         self.config = config
         self.downloadDir = downloadDir
         self.timeout = timeout
@@ -60,12 +61,12 @@ public struct YuttoBackend: DownloadBackend {
         guard let binary = resolveBinary() else {
             return DownloadResult(
                 success: false,
-                errorMessage: "找不到 yutto 可执行文件：\(config.binary)。请在设置里指定绝对路径。"
+                errorMessage: "找不到 bili-dl 可执行文件：\(config.binary)。请确认 .app 内嵌完整，或在设置里指定绝对路径。"
             )
         }
 
         let authExists = AuthFile.exists(path: config.authFile)
-        let args = YuttoArgs.build(
+        let args = BiliDlArgs.build(
             config: config,
             url: url,
             downloadDir: downloadDir,
@@ -73,7 +74,7 @@ public struct YuttoBackend: DownloadBackend {
             authFileExists: authExists,
             binaryPath: binary
         )
-        Log.info("yutto 开始下载：\(url)")
+        Log.info("bili-dl 开始下载：\(url)")
         Log.debug("命令：\(args.joined(separator: " "))")
 
         let before: FileSnapshot
@@ -89,7 +90,8 @@ public struct YuttoBackend: DownloadBackend {
             executable: binary,
             arguments: Array(args.dropFirst()),
             environment: Subprocess.environment(),
-            // CWD 必须是 workDir：yutto 会读 ./yutto.toml，落在下载目录里会静默覆盖参数。
+            // CWD 设为 workDir：与 yutto 时代的约定保持一致（旧版会读 ./yutto.toml）；
+            // bili-dl 的产物一律落在 -d，不读 CWD 配置，但保留此约定便于排查。
             currentDirectory: workDir,
             timeout: timeout,
             handle: handle,
@@ -108,7 +110,7 @@ public struct YuttoBackend: DownloadBackend {
         if result.timedOut {
             return DownloadResult(
                 success: false,
-                errorMessage: "yutto 执行超时（\(Int(timeout))s）",
+                errorMessage: "bili-dl 执行超时（\(Int(timeout))s）",
                 logTail: tail.snapshot
             )
         }
@@ -118,7 +120,7 @@ public struct YuttoBackend: DownloadBackend {
             let summary = String(output.suffix(800))
             return DownloadResult(
                 success: false,
-                errorMessage: "yutto 退出码 \(result.exitCode)：\(summary)",
+                errorMessage: "bili-dl 退出码 \(result.exitCode)：\(summary)",
                 logTail: tail.snapshot
             )
         }
@@ -134,10 +136,10 @@ public struct YuttoBackend: DownloadBackend {
             // 退出 0 但零产出，可能是视频已存在、输出目录不对、下载被跳过，也可能是
             // 快照被别的进程污染。旧实现按成功处理，UI 会显示「已完成」却什么都没有，
             // 而且没有重试入口。现在按可重试的失败处理（不删 links.txt）。
-            Log.warning("yutto 退出 0 但未发现新文件：\(url)")
+            Log.warning("bili-dl 退出 0 但未发现新文件：\(url)")
             return DownloadResult(
                 success: false,
-                errorMessage: "yutto 退出 0 但没有产出新文件：视频可能已存在、输出目录不对或下载被跳过。请查看日志；确实已下载可在队列里标记完成。",
+                errorMessage: "bili-dl 退出 0 但没有产出新文件：视频可能已存在、输出目录不对或下载被跳过。请查看日志；确实已下载可在队列里标记完成。",
                 logTail: tail.snapshot
             )
         }
@@ -153,16 +155,14 @@ public struct YuttoBackend: DownloadBackend {
             let bytes = Self.fileSize(finalPath)
             outputs.append(TaskOutput(path: finalPath, kind: "video", bytes: bytes))
         }
-        Log.success("yutto 下载完成：\(outputs.count) 个文件")
+        Log.success("bili-dl 下载完成：\(outputs.count) 个文件")
         return DownloadResult(
             success: true, outputs: outputs, logTail: tail.snapshot, safeToPrune: true
         )
     }
 
     private func resolveBinary() -> String? {
-        let configured = config.binary.trimmingCharacters(in: .whitespaces)
-        guard !configured.isEmpty else { return nil }
-        return Subprocess.lookupOnPATH(configured)
+        BundledTool.resolveBiliDl(configured: config.binary)
     }
 
     static func fileSize(_ path: String) -> Int64? {

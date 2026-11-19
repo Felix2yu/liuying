@@ -128,20 +128,20 @@ final class CanonicalKeyTests: XCTestCase {
     }
 }
 
-final class YuttoArgsTests: XCTestCase {
+final class BiliDlArgsTests: XCTestCase {
     private let url = "https://www.bilibili.com/video/BV1GJ411x7h7"
 
     func testDefaultArgvSnapshot() {
-        let args = YuttoArgs.build(
-            config: YuttoConfig(),
+        let args = BiliDlArgs.build(
+            config: BiliDlConfig(),
             url: url,
             downloadDir: "/Downloads/Bilibili",
             workDir: "/support/work/task-7",
             authFileExists: false,
-            binaryPath: "/Users/yufei/.local/bin/yutto"
+            binaryPath: "/Applications/流影.app/Contents/MacOS/bili-dl"
         )
         XCTAssertEqual(args, [
-            "/Users/yufei/.local/bin/yutto",
+            "/Applications/流影.app/Contents/MacOS/bili-dl",
             "--batch",
             url,
             "-d", "/Downloads/Bilibili",
@@ -160,14 +160,14 @@ final class YuttoArgsTests: XCTestCase {
     }
 
     func testAllTogglesInverted() {
-        var config = YuttoConfig()
+        var config = BiliDlConfig()
         config.downloadAllPages = false
         config.downloadDanmaku = true
         config.downloadSubtitle = true
         config.saveCover = true
-        let args = YuttoArgs.build(
+        let args = BiliDlArgs.build(
             config: config, url: url, downloadDir: "/d",
-            binaryPath: "yutto"
+            binaryPath: "bili-dl"
         )
         XCTAssertFalse(args.contains("--batch"))
         XCTAssertFalse(args.contains("--no-danmaku"))
@@ -177,14 +177,14 @@ final class YuttoArgsTests: XCTestCase {
     }
 
     func testAuthFileFlagsOnlyWhenFileExists() {
-        let without = YuttoArgs.build(
-            config: YuttoConfig(), url: url, downloadDir: "/d", authFileExists: false, binaryPath: "yutto"
+        let without = BiliDlArgs.build(
+            config: BiliDlConfig(), url: url, downloadDir: "/d", authFileExists: false, binaryPath: "bili-dl"
         )
         XCTAssertFalse(without.contains("--auth-file"))
         XCTAssertFalse(without.contains("--auth-profile"))
 
-        let with = YuttoArgs.build(
-            config: YuttoConfig(), url: url, downloadDir: "/d", authFileExists: true, binaryPath: "yutto"
+        let with = BiliDlArgs.build(
+            config: BiliDlConfig(), url: url, downloadDir: "/d", authFileExists: true, binaryPath: "bili-dl"
         )
         XCTAssertTrue(with.contains("--auth-file"))
         XCTAssertTrue(with.contains("--auth-profile"))
@@ -192,23 +192,23 @@ final class YuttoArgsTests: XCTestCase {
     }
 
     func testExtraArgsAppendedVerbatimAtEnd() {
-        var config = YuttoConfig()
+        var config = BiliDlConfig()
         config.extraArgs = ["--proxy", "http://127.0.0.1:6152", "-n", "4"]
-        let args = YuttoArgs.build(
-            config: config, url: url, downloadDir: "/d", binaryPath: "yutto"
+        let args = BiliDlArgs.build(
+            config: config, url: url, downloadDir: "/d", binaryPath: "bili-dl"
         )
         XCTAssertEqual(Array(args.suffix(4)), ["--proxy", "http://127.0.0.1:6152", "-n", "4"])
     }
 
     func testEmptyOptionalValuesAreOmitted() {
-        var config = YuttoConfig()
+        var config = BiliDlConfig()
         config.vcodec = ""
         config.vcodecPriority = []
         config.outputFormat = ""
         config.subpathTemplate = ""
         config.videoQuality = 0
         config.audioQuality = 0
-        let args = YuttoArgs.build(config: config, url: url, downloadDir: "/d", binaryPath: "yutto")
+        let args = BiliDlArgs.build(config: config, url: url, downloadDir: "/d", binaryPath: "bili-dl")
         for flag in ["--vcodec", "--download-vcodec-priority", "--output-format", "-tp", "-q", "-aq"] {
             XCTAssertFalse(args.contains(flag), "\(flag) 不该出现")
         }
@@ -606,23 +606,23 @@ final class ConfigTests: XCTestCase {
         let config = AppConfig()
         XCTAssertEqual(config.pollInterval, 15)
         XCTAssertEqual(config.downloadDir, "~/Downloads/Bilibili")
-        XCTAssertEqual(config.bilibiliBackend, .yutto)
+        XCTAssertEqual(config.bilibiliBackend, .biliDL)
         XCTAssertEqual(config.otherBackend, .downie, "非 B 站链接默认走 Downie")
         XCTAssertEqual(config.maxTasksPerRound, 20)
         XCTAssertTrue(config.notify)
-        XCTAssertEqual(config.yutto.videoQuality, 127)
-        XCTAssertEqual(config.yutto.audioQuality, 30_280)
-        XCTAssertEqual(config.yutto.vcodec, "av1:copy")
-        XCTAssertEqual(config.yutto.vcodecPriority, ["av1", "hevc", "avc"])
-        XCTAssertEqual(config.yutto.outputFormat, "mp4")
-        XCTAssertEqual(config.yutto.subpathTemplate, "{owner_uname}/{title}")
-        XCTAssertTrue(config.yutto.downloadAllPages)
-        XCTAssertFalse(config.yutto.downloadDanmaku)
-        XCTAssertFalse(config.yutto.downloadSubtitle)
-        XCTAssertFalse(config.yutto.saveCover)
-        XCTAssertEqual(config.yutto.authFile, "~/.config/yutto/auth.toml")
-        XCTAssertEqual(config.yutto.authProfile, "default")
-        XCTAssertEqual(config.yutto.outputContainers, ["av1": "mkv", "hevc": "mov", "avc": "mp4"])
+        XCTAssertEqual(config.biliDL.videoQuality, 127)
+        XCTAssertEqual(config.biliDL.audioQuality, 30_280)
+        XCTAssertEqual(config.biliDL.vcodec, "av1:copy")
+        XCTAssertEqual(config.biliDL.vcodecPriority, ["av1", "hevc", "avc"])
+        XCTAssertEqual(config.biliDL.outputFormat, "mp4")
+        XCTAssertEqual(config.biliDL.subpathTemplate, "{owner_uname}/{title}")
+        XCTAssertTrue(config.biliDL.downloadAllPages)
+        XCTAssertFalse(config.biliDL.downloadDanmaku)
+        XCTAssertFalse(config.biliDL.downloadSubtitle)
+        XCTAssertFalse(config.biliDL.saveCover)
+        XCTAssertEqual(config.biliDL.authFile, "~/.config/yutto/auth.toml")
+        XCTAssertEqual(config.biliDL.authProfile, "default")
+        XCTAssertEqual(config.biliDL.outputContainers, ["av1": "mkv", "hevc": "mov", "avc": "mp4"])
         XCTAssertEqual(config.downie.appName, "Downie 4")
         XCTAssertEqual(config.downie.postprocessing, "mp4")
         XCTAssertFalse(config.clipboardMonitor)
@@ -638,7 +638,7 @@ final class ConfigTests: XCTestCase {
           "other_backend": "yutto",
           "notify": false,
           "yutto": {
-            "binary": "/Users/yufei/.local/bin/yutto",
+            "binary": "/Applications/流影.app/Contents/MacOS/bili-dl",
             "video_quality": 120,
             "vcodec_priority": ["hevc", "av1", "avc"],
             "extra_args": ["-x", "auto"]
@@ -650,17 +650,17 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.pollInterval, 20)
         XCTAssertEqual(config.downloadDir, "~/Movies/Bili")
         XCTAssertEqual(config.bilibiliBackend, .downie)
-        XCTAssertEqual(config.otherBackend, .yutto)
+        XCTAssertEqual(config.otherBackend, .biliDL)
         XCTAssertFalse(config.notify)
-        XCTAssertEqual(config.yutto.binary, "/Users/yufei/.local/bin/yutto")
-        XCTAssertEqual(config.yutto.videoQuality, 120)
-        XCTAssertEqual(config.yutto.vcodecPriority, ["hevc", "av1", "avc"])
-        XCTAssertEqual(config.yutto.extraArgs, ["-x", "auto"])
+        XCTAssertEqual(config.biliDL.binary, "/Applications/流影.app/Contents/MacOS/bili-dl")
+        XCTAssertEqual(config.biliDL.videoQuality, 120)
+        XCTAssertEqual(config.biliDL.vcodecPriority, ["hevc", "av1", "avc"])
+        XCTAssertEqual(config.biliDL.extraArgs, ["-x", "auto"])
         XCTAssertEqual(config.downie.appName, "Downie")
         XCTAssertEqual(config.downie.postprocessing, "audio")
         // 未出现的键保持默认
-        XCTAssertEqual(config.yutto.audioQuality, 30_280)
-        XCTAssertTrue(config.yutto.downloadAllPages)
+        XCTAssertEqual(config.biliDL.audioQuality, 30_280)
+        XCTAssertTrue(config.biliDL.downloadAllPages)
     }
 
     func testPartialAndMalformedFieldsFallBackToDefaults() throws {
@@ -669,17 +669,17 @@ final class ConfigTests: XCTestCase {
         """
         let config = try AppConfig.decode(fromJSON: Data(json.utf8))
         XCTAssertEqual(config.pollInterval, 15)
-        XCTAssertEqual(config.bilibiliBackend, .yutto)
+        XCTAssertEqual(config.bilibiliBackend, .biliDL)
         XCTAssertEqual(config.otherBackend, .downie, "畸形值应退回默认")
-        XCTAssertEqual(config.yutto.videoQuality, 127)
+        XCTAssertEqual(config.biliDL.videoQuality, 127)
     }
 
     func testRoundTrip() throws {
         var config = AppConfig()
         config.watchFile = "/tmp/links.txt"
         config.pollInterval = 60
-        config.yutto.extraArgs = ["--proxy", "auto"]
-        config.yutto.outputContainers = ["av1": "mkv"]
+        config.biliDL.extraArgs = ["--proxy", "auto"]
+        config.biliDL.outputContainers = ["av1": "mkv"]
         let decoded = try AppConfig.decode(fromJSON: config.encodedJSON())
         XCTAssertEqual(decoded, config)
     }
@@ -689,49 +689,105 @@ final class ConfigTests: XCTestCase {
         config.pollInterval = 1
         config.maxTasksPerRound = 0
         config.subscriptionInterval = 5
-        config.yuttoTimeout = 1
+        config.biliDLTimeout = 1
         config.downloadDir = "   "
-        config.yutto.vcodecPriority = []
-        config.yutto.subpathTemplate = "  "
+        config.biliDL.vcodecPriority = []
+        config.biliDL.subpathTemplate = "  "
         config.normalize()
         XCTAssertEqual(config.pollInterval, 5)
         XCTAssertEqual(config.maxTasksPerRound, 1)
         XCTAssertEqual(config.subscriptionInterval, 60)
-        XCTAssertEqual(config.yuttoTimeout, 60)
+        XCTAssertEqual(config.biliDLTimeout, 60)
         XCTAssertEqual(config.downloadDir, "~/Downloads/Bilibili")
-        XCTAssertEqual(config.yutto.vcodecPriority, ["av1", "hevc", "avc"])
-        XCTAssertEqual(config.yutto.subpathTemplate, "{owner_uname}/{title}")
+        XCTAssertEqual(config.biliDL.vcodecPriority, ["av1", "hevc", "avc"])
+        XCTAssertEqual(config.biliDL.subpathTemplate, "{owner_uname}/{title}")
     }
 
     func testBackendRoutingByHost() {
         var config = AppConfig()
-        XCTAssertEqual(config.backend(for: "https://www.bilibili.com/video/BV1GJ411x7h7"), .yutto)
-        XCTAssertEqual(config.backend(for: "https://b23.tv/abc123"), .yutto)
-        XCTAssertEqual(config.backend(for: "https://bilibili.tv/zh/video/BV1GJ411x7h7"), .yutto)
+        XCTAssertEqual(config.backend(for: "https://www.bilibili.com/video/BV1GJ411x7h7"), .biliDL)
+        XCTAssertEqual(config.backend(for: "https://b23.tv/abc123"), .biliDL)
+        XCTAssertEqual(config.backend(for: "https://bilibili.tv/zh/video/BV1GJ411x7h7"), .biliDL)
         XCTAssertEqual(config.backend(for: "https://www.xiaohongshu.com/explore/abc"), .downie)
         XCTAssertEqual(config.backend(for: "https://xhslink.com/a/abc"), .downie)
         XCTAssertEqual(config.backend(for: "https://x.com/i/status/1"), .downie)
 
         // 两个方向都能由用户改
         config.bilibiliBackend = .downie
-        config.otherBackend = .yutto
+        config.otherBackend = .biliDL
         XCTAssertEqual(config.backend(for: "https://b23.tv/abc"), .downie)
-        XCTAssertEqual(config.backend(for: "https://example.com/a"), .yutto)
+        XCTAssertEqual(config.backend(for: "https://example.com/a"), .biliDL)
     }
 
     func testRoutingSurvivesRoundTrip() throws {
         var config = AppConfig()
-        config.otherBackend = .yutto
+        config.otherBackend = .biliDL
         let decoded = try AppConfig.decode(fromJSON: config.encodedJSON())
-        XCTAssertEqual(decoded.backend(for: "https://example.com"), .yutto)
+        XCTAssertEqual(decoded.backend(for: "https://example.com"), .biliDL)
     }
 
-    func testQualityOptionTablesMatchYutto() {
-        XCTAssertEqual(YuttoQuality.videoOptions.first?.value, 127)
-        XCTAssertEqual(YuttoQuality.audioOptions.first?.value, 30_251)
-        XCTAssertTrue(YuttoQuality.videoOptions.contains { $0.value == 116 })
-        XCTAssertEqual(YuttoQuality.videoLabel(127), "127 · 8K")
-        XCTAssertEqual(YuttoQuality.audioLabel(99_999), "99999")
+    func testQualityOptionTablesMatchBili() {
+        XCTAssertEqual(BiliQuality.videoOptions.first?.value, 127)
+        XCTAssertEqual(BiliQuality.audioOptions.first?.value, 30_251)
+        XCTAssertTrue(BiliQuality.videoOptions.contains { $0.value == 116 })
+        XCTAssertEqual(BiliQuality.videoLabel(127), "127 · 8K")
+        XCTAssertEqual(BiliQuality.audioLabel(99_999), "99999")
+    }
+
+    /// 完全替代 yutto：旧的 "yutto" 路由值、yutto 配置段、yutto_timeout 都要迁过来。
+    func testMigratesLegacyYuttoKeys() throws {
+        let json = """
+        {
+          "bilibili_backend": "yutto",
+          "other_backend": "yutto",
+          "yutto_timeout": 7200,
+          "yutto": {"video_quality": 64, "auth_profile": "vip", "save_cover": true}
+        }
+        """
+        let config = try AppConfig.decode(fromJSON: Data(json.utf8))
+        XCTAssertEqual(config.bilibiliBackend, .biliDL)
+        XCTAssertEqual(config.otherBackend, .biliDL)
+        XCTAssertEqual(config.biliDLTimeout, 7200)
+        XCTAssertEqual(config.biliDL.videoQuality, 64)
+        XCTAssertEqual(config.biliDL.authProfile, "vip")
+        XCTAssertTrue(config.biliDL.saveCover)
+        // 再编码一次不应把旧键写回去
+        let encoded = String(decoding: try config.encodedJSON(), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("\"yutto\""))
+        XCTAssertFalse(encoded.contains("yutto_timeout"))
+        XCTAssertTrue(encoded.contains("\"bili_dl\""))
+        XCTAssertTrue(encoded.contains("bili_dl_timeout"))
+    }
+
+    /// new 键与 old 键同时存在时，new 键优先。
+    func testNewKeysTakePrecedenceOverLegacy() throws {
+        let json = """
+        {
+          "bili_dl_timeout": 120,
+          "yutto_timeout": 7200,
+          "bili_dl": {"video_quality": 32},
+          "yutto": {"video_quality": 127}
+        }
+        """
+        let config = try AppConfig.decode(fromJSON: Data(json.utf8))
+        XCTAssertEqual(config.biliDLTimeout, 120)
+        XCTAssertEqual(config.biliDL.videoQuality, 32)
+    }
+}
+
+final class BundledToolTests: XCTestCase {
+    /// 相对名走内嵌/PATH 解析；裸测试进程不在 .app 里，断言只要求「不崩且结果可为 nil」。
+    func testRelativeNameResolvesWithoutCrash() {
+        _ = BundledTool.resolveBiliDl(configured: "bili-dl")
+    }
+
+    /// 显式绝对路径必须是可执行的才返回，否则 nil（不允许配置把下载引到坏路径）。
+    func testAbsolutePathRequiresExecutable() {
+        XCTAssertNil(BundledTool.resolveBiliDl(configured: "/definitely/not/a/real/bili-dl"))
+        XCTAssertEqual(
+            BundledTool.resolveBiliDl(configured: "/bin/sh"),
+            "/bin/sh"
+        )
     }
 }
 final class ShareTextTests: XCTestCase {
@@ -745,11 +801,11 @@ final class ShareTextTests: XCTestCase {
         )
     }
 
-    func testShareTextRoutesToYutto() {
+    func testShareTextRoutesToBiliDl() {
         let config = AppConfig()
         let url = try! XCTUnwrap(URLExtractor.extract(from: shareText).first)
         XCTAssertTrue(URLExtractor.isBilibiliHost(url))
-        XCTAssertEqual(config.backend(for: url), .yutto)
+        XCTAssertEqual(config.backend(for: url), .biliDL)
         XCTAssertEqual(CanonicalKey.localKey(url), "BV1QUW46oEuT")
     }
 
@@ -808,11 +864,11 @@ final class EngineRoundLimitTests: XCTestCase {
         var config = AppConfig()
         config.watchFile = linkFile
         config.downloadDir = (directory as NSString).appendingPathComponent("out")
-        config.otherBackend = .yutto
+        config.otherBackend = .biliDL
         config.maxTasksPerRound = limit
         config.notify = false
         // 不存在的 binary 让下载立即失败，不起子进程、不联网。
-        config.yutto.binary = "liuying-missing-\(UUID().uuidString)"
+        config.biliDL.binary = "liuying-missing-\(UUID().uuidString)"
 
         let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
         let maybeID = try await store.add(NewTask(
@@ -1007,7 +1063,7 @@ final class P2RegressionTests: XCTestCase {
         config.watchFile = linkFile
         config.downloadDir = (directory as NSString).appendingPathComponent("out")
         config.notify = false
-        config.yutto.binary = "liuying-missing-\(UUID().uuidString)"
+        config.biliDL.binary = "liuying-missing-\(UUID().uuidString)"
         let store = try TaskStore(path: (directory as NSString).appendingPathComponent("state.db"))
         let engine = Engine(store: store, config: config)
         let box = SnapshotBox()

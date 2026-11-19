@@ -10,8 +10,8 @@ struct SettingsView: View {
         TabView {
             PathsPane().environment(env)
                 .tabItem { Label("通用", systemImage: "gearshape") }
-            YuttoPane().environment(env)
-                .tabItem { Label("yutto", systemImage: "terminal") }
+            BiliDlPane().environment(env)
+                .tabItem { Label("bili-dl", systemImage: "terminal") }
             DowniePane().environment(env)
                 .tabItem { Label("Downie", systemImage: "arrow.down.app") }
             AdvancedPane().environment(env)
@@ -111,7 +111,7 @@ struct PathsPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("主窗口按 ⌘V 直接下载剪贴板里的链接", isOn: bind(env, \.pasteShortcut))
-                Text("只在主窗口是焦点窗口、没有弹层、且不在输入框里时生效；其它情况 ⌘V 仍是系统粘贴。支持分享文案里的 http(s) 链接，B 站走 yutto、其它按路由走 Downie。")
+                Text("只在主窗口是焦点窗口、没有弹层、且不在输入框里时生效；其它情况 ⌘V 仍是系统粘贴。支持分享文案里的 http(s) 链接，B 站走内嵌 bili-dl、其它按路由走 Downie。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("登录时启动", isOn: Binding(
@@ -215,9 +215,9 @@ struct PathsPane: View {
     }
 }
 
-// MARK: - yutto
+// MARK: - bili-dl
 
-struct YuttoPane: View {
+struct BiliDlPane: View {
     @Environment(AppEnvironment.self) private var env
     @State private var priorityText = ""
     @State private var extraArgsText = ""
@@ -225,14 +225,21 @@ struct YuttoPane: View {
     var body: some View {
         Form {
             Section("可执行文件") {
-                PathInputRow(
-                    title: "yutto",
-                    placeholder: "yutto 或绝对路径",
-                    text: bind(env, \.yutto.binary),
-                    browse: .file(message: "选择 yutto 可执行文件")
+                let bundled = BundledTool.bundledBiliDl()
+                Label(
+                    bundled.map { "已内嵌：\($0)" } ?? "当前不是 .app 运行，未加载内嵌二进制",
+                    systemImage: bundled == nil ? "exclamationmark.triangle" : "checkmark.circle"
                 )
-                let resolved = Subprocess.lookupOnPATH(env.configStore.config.yutto.binary)
-                Text(resolved.map { "解析为：\($0)" } ?? "找不到这个可执行文件")
+                .font(.caption)
+                .foregroundStyle(bundled == nil ? Color.orange : Color.secondary)
+                PathInputRow(
+                    title: "覆盖路径（可选）",
+                    placeholder: "留用内嵌，或填绝对路径",
+                    text: bind(env, \.biliDL.binary),
+                    browse: .file(message: "选择 bili-dl 可执行文件")
+                )
+                let resolved = BundledTool.resolveBiliDl(configured: env.configStore.config.biliDL.binary)
+                Text(resolved.map { "实际使用：\($0)" } ?? "找不到这个可执行文件")
                     .font(.caption)
                     .foregroundStyle(resolved == nil ? Color.red : Color.secondary)
             }
@@ -240,22 +247,22 @@ struct YuttoPane: View {
             Section("画质与编码") {
                 LabeledPicker(
                     title: "视频画质上限",
-                    selection: bind(env, \.yutto.videoQuality),
-                    options: YuttoQuality.videoOptions.map {
+                    selection: bind(env, \.biliDL.videoQuality),
+                    options: BiliQuality.videoOptions.map {
                         PickerOption(id: $0.value, label: "\($0.value) · \($0.label)")
                     }
                 )
                 LabeledPicker(
                     title: "音频码率",
-                    selection: bind(env, \.yutto.audioQuality),
-                    options: YuttoQuality.audioOptions.map {
+                    selection: bind(env, \.biliDL.audioQuality),
+                    options: BiliQuality.audioOptions.map {
                         PickerOption(id: $0.value, label: "\($0.value) · \($0.label)")
                     }
                 )
                 LabeledTextField(
                     title: "vcodec（下载:保存）",
                     placeholder: "下载:保存",
-                    text: bind(env, \.yutto.vcodec)
+                    text: bind(env, \.biliDL.vcodec)
                 )
                 LabeledTextField(
                     title: "编码优先级",
@@ -265,37 +272,37 @@ struct YuttoPane: View {
                     onSubmit: commitPriority
                 )
                 LabeledPicker(
-                    title: "yutto 输出格式",
-                    selection: bind(env, \.yutto.outputFormat),
-                    options: YuttoQuality.outputFormats.map { PickerOption(id: $0, label: $0) }
+                    title: "输出格式",
+                    selection: bind(env, \.biliDL.outputFormat),
+                    options: BiliQuality.outputFormats.map { PickerOption(id: $0, label: $0) }
                 )
                 LabeledTextField(
                     title: "目录模板",
                     placeholder: "例如 {owner}/{title}",
-                    text: bind(env, \.yutto.subpathTemplate)
+                    text: bind(env, \.biliDL.subpathTemplate)
                 )
             }
 
             Section("资源") {
-                Toggle("下载全部分 P（--batch）", isOn: bind(env, \.yutto.downloadAllPages))
-                Toggle("生成弹幕", isOn: bind(env, \.yutto.downloadDanmaku))
-                Toggle("生成字幕", isOn: bind(env, \.yutto.downloadSubtitle))
-                Toggle("单独保存封面", isOn: bind(env, \.yutto.saveCover))
+                Toggle("下载全部分 P（--batch）", isOn: bind(env, \.biliDL.downloadAllPages))
+                Toggle("生成弹幕", isOn: bind(env, \.biliDL.downloadDanmaku))
+                Toggle("生成字幕", isOn: bind(env, \.biliDL.downloadSubtitle))
+                Toggle("单独保存封面", isOn: bind(env, \.biliDL.saveCover))
             }
 
             Section("登录态") {
                 PathInputRow(
                     title: "auth.toml",
                     placeholder: "auth.toml 路径（可含 ~）",
-                    text: bind(env, \.yutto.authFile),
-                    browse: .file(message: "选择 yutto 的 auth.toml")
+                    text: bind(env, \.biliDL.authFile),
+                    browse: .file(message: "选择 bili-dl 用的 auth.toml")
                 )
                 LabeledTextField(
                     title: "profile",
                     placeholder: "默认 profile 名",
-                    text: bind(env, \.yutto.authProfile)
+                    text: bind(env, \.biliDL.authProfile)
                 )
-                let exists = AuthFile.exists(path: env.configStore.config.yutto.authFile)
+                let exists = AuthFile.exists(path: env.configStore.config.biliDL.authFile)
                 Label(
                     exists ? "文件存在，会带上 --auth-file" : "文件不存在，将退化为未登录（最高 1080P）",
                     systemImage: exists ? "checkmark.circle" : "exclamationmark.triangle"
@@ -312,13 +319,13 @@ struct YuttoPane: View {
                     LabeledPicker(
                         title: codec,
                         selection: Binding(
-                            get: { env.configStore.config.yutto.outputContainers[codec] ?? "mkv" },
+                            get: { env.configStore.config.biliDL.outputContainers[codec] ?? "mkv" },
                             set: { newValue in
-                                env.configStore.update { $0.yutto.outputContainers[codec] = newValue }
+                                env.configStore.update { $0.biliDL.outputContainers[codec] = newValue }
                                 Task { await env.pushConfigToEngine() }
                             }
                         ),
-                        options: YuttoQuality.containers.map { PickerOption(id: $0, label: $0) }
+                        options: BiliQuality.containers.map { PickerOption(id: $0, label: $0) }
                     )
                 }
             }
@@ -328,12 +335,12 @@ struct YuttoPane: View {
                     title: "追加参数",
                     placeholder: "--proxy auto",
                     text: $extraArgsText,
-                    hint: "原样追加到 yutto 命令末尾",
+                    hint: "原样追加到 bili-dl 命令末尾",
                     onSubmit: commitExtraArgs
                 )
                 StepperRow(
                     title: "单次下载超时",
-                    value: bind(env, \.yuttoTimeout),
+                    value: bind(env, \.biliDLTimeout),
                     range: 60...86_400,
                     step: 60
                 ) { "\($0 / 60) 分钟" }
@@ -341,8 +348,8 @@ struct YuttoPane: View {
         }
         .formStyle(.grouped)
         .onAppear {
-            priorityText = env.configStore.config.yutto.vcodecPriority.joined(separator: ",")
-            extraArgsText = ShellWord.join(env.configStore.config.yutto.extraArgs)
+            priorityText = env.configStore.config.biliDL.vcodecPriority.joined(separator: ",")
+            extraArgsText = ShellWord.join(env.configStore.config.biliDL.extraArgs)
         }
     }
 
@@ -352,7 +359,7 @@ struct YuttoPane: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         guard !values.isEmpty else { return }
-        env.configStore.update { $0.yutto.vcodecPriority = values }
+        env.configStore.update { $0.biliDL.vcodecPriority = values }
         Task { await env.pushConfigToEngine() }
     }
 
@@ -361,7 +368,7 @@ struct YuttoPane: View {
             Log.warning("追加参数引号未闭合，未保存")
             return
         }
-        env.configStore.update { $0.yutto.extraArgs = words }
+        env.configStore.update { $0.biliDL.extraArgs = words }
         Task { await env.pushConfigToEngine() }
     }
 }
@@ -399,7 +406,7 @@ struct DowniePane: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                Text("B 站主机（b23.tv / bilibili.com / bilibili.tv）走第一个；其余 http(s) 链接走第二个 —— yutto 只认 B 站。后端在任务开始下载时按当前设置选择，排队中的任务改设置后会跟着换。")
+                Text("B 站主机（b23.tv / bilibili.com / bilibili.tv）走第一个；其余 http(s) 链接走第二个 —— bili-dl 只认 B 站。后端在任务开始下载时按当前设置选择，排队中的任务改设置后会跟着换。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -412,7 +419,7 @@ struct DowniePane: View {
                 LabeledPicker(
                     title: "后处理",
                     selection: bind(env, \.downie.postprocessing),
-                    options: YuttoQuality.downiePostprocessing.map { PickerOption(id: $0, label: $0) }
+                    options: BiliQuality.downiePostprocessing.map { PickerOption(id: $0, label: $0) }
                 )
                 PathInputRow(
                     title: "目标目录",

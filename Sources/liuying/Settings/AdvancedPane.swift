@@ -51,8 +51,8 @@ struct AdvancedPane: View {
                 )
                 let resolved = AuthFile.resolveSessdata(
                     override: env.configStore.config.sessdataOverride,
-                    path: env.configStore.config.yutto.authFile,
-                    profile: env.configStore.config.yutto.authProfile
+                    path: env.configStore.config.biliDL.authFile,
+                    profile: env.configStore.config.biliDL.authProfile
                 )
                 Label(
                     resolved == nil ? "当前没有可用的 SESSDATA：订阅追更会被风控" : "已就绪（不显示内容）",
@@ -140,7 +140,7 @@ struct AdvancedPane: View {
                 if let resetMessage {
                     Text(resetMessage).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("会重置路径、轮询间隔、后端路由、yutto / Downie 参数与开关；不影响任务队列、视频文件和 links.txt。")
+                Text("会重置路径、轮询间隔、后端路由、bili-dl / Downie 参数与开关；不影响任务队列、视频文件和 links.txt。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

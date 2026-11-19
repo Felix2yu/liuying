@@ -20,7 +20,9 @@ func doctor() {
     print("")
 
     print("-- 外部依赖解析 --")
-    for tool in ["yutto", "ffmpeg", "ffprobe"] {
+    let biliDl = BundledTool.resolveBiliDl(configured: AppConfig().biliDL.binary) ?? "(未找到)"
+    print("  bili-dl  \(biliDl)\(biliDl == "(未找到)" ? "（.app 内嵌或 PATH 均未找到）" : "")")
+    for tool in ["ffmpeg", "ffprobe"] {
         let resolved = Subprocess.lookupOnPATH(tool) ?? "(未找到)"
         print("  \(tool.padding(toLength: 8, withPad: " ", startingAt: 0)) \(resolved)")
     }
@@ -41,15 +43,15 @@ func doctor() {
         print("SQLite     : 失败 \(error)")
     }
 
-    if let yutto = Subprocess.lookupOnPATH("yutto") {
-        print("")
-        print("-- yutto --version --")
+    if let biliDl = BundledTool.resolveBiliDl(configured: AppConfig().biliDL.binary) {
+        // bili-dl 没有 --version；只确认可执行文件能启动（无参时打印用法、退出 2 属正常）。
         let result = Subprocess.runBlocking(
-            executable: yutto, arguments: ["--version"],
+            executable: biliDl, arguments: [],
             environment: Subprocess.environment(), timeout: 30
         )
-        print("exit=\(result.exitCode) launched=\(result.launched)")
-        print((result.stdout + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines))
+        print("")
+        print("-- bili-dl 可执行性 --")
+        print("  launched=\(result.launched) exit=\(result.exitCode)（无参退出 2 = 打印用法，正常）")
     }
 }
 
@@ -57,8 +59,8 @@ func biliRaw(_ mid: Int64) async {
     let config = AppConfig()
     let sessdata = AuthFile.resolveSessdata(
         override: config.sessdataOverride,
-        path: config.yutto.authFile,
-        profile: config.yutto.authProfile
+        path: config.biliDL.authFile,
+        profile: config.biliDL.authProfile
     )
     let client = BiliClient(sessdata: sessdata)
     do {
@@ -73,8 +75,8 @@ func biliSign(_ mid: Int64) async {
     let config = AppConfig()
     let sessdata = AuthFile.resolveSessdata(
         override: config.sessdataOverride,
-        path: config.yutto.authFile,
-        profile: config.yutto.authProfile
+        path: config.biliDL.authFile,
+        profile: config.biliDL.authProfile
     )
     let client = BiliClient(sessdata: sessdata)
     do {
@@ -95,14 +97,14 @@ func biliSmoke(_ bvid: String) async {
     let config = AppConfig()
     let sessdata = AuthFile.resolveSessdata(
         override: config.sessdataOverride,
-        path: config.yutto.authFile,
-        profile: config.yutto.authProfile
+        path: config.biliDL.authFile,
+        profile: config.biliDL.authProfile
     )
     if let sessdata {
         print("SESSDATA : 已加载（\(sessdata.count) 字符，不打印值）")
     } else {
         print("SESSDATA : 未找到，走匿名（大概率被风控 -352）")
-        print("           路径 \(AppIdentity.expand(config.yutto.authFile)) profile=\(config.yutto.authProfile)")
+        print("           路径 \(AppIdentity.expand(config.biliDL.authFile)) profile=\(config.biliDL.authProfile)")
     }
 
     let client = BiliClient(sessdata: sessdata)
@@ -162,8 +164,8 @@ func biliFindMultiPage(mid: Int64, maxScan: Int) async {
     let config = AppConfig()
     let sessdata = AuthFile.resolveSessdata(
         override: config.sessdataOverride,
-        path: config.yutto.authFile,
-        profile: config.yutto.authProfile
+        path: config.biliDL.authFile,
+        profile: config.biliDL.authProfile
     )
     let client = BiliClient(sessdata: sessdata)
     do {
@@ -202,15 +204,15 @@ func routeReport(_ urls: [String]) async {
         print("\(isBili ? "B 站" : "其它")  \(url)")
         print("  后端 → \(backend.displayName)")
         switch backend {
-        case .yutto:
-            if let binary = Subprocess.lookupOnPATH(config.yutto.binary) {
-                let argv = YuttoArgs.build(
-                    config: config.yutto, url: url, downloadDir: downloadDir, workDir: nil,
-                    authFileExists: AuthFile.exists(path: config.yutto.authFile), binaryPath: binary
+        case .biliDL:
+            if let binary = BundledTool.resolveBiliDl(configured: config.biliDL.binary) {
+                let argv = BiliDlArgs.build(
+                    config: config.biliDL, url: url, downloadDir: downloadDir, workDir: nil,
+                    authFileExists: AuthFile.exists(path: config.biliDL.authFile), binaryPath: binary
                 )
                 print("  命令 → \(argv.joined(separator: " "))")
             } else {
-                print("  命令 → ⚠️ 找不到 yutto 可执行文件")
+                print("  命令 → ⚠️ 找不到 bili-dl 可执行文件（.app 内嵌或 PATH）")
             }
         case .downie:
             let scheme = DownieBackend.schemeURL(config: config.downie, url: url, downloadDir: downloadDir)
@@ -232,8 +234,8 @@ func downloadTest(_ url: String, extra: [String] = []) async {
     try? FileManager.default.createDirectory(atPath: workDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(atPath: workDir) }
 
-    var yuttoConfig = config.yutto
-    yuttoConfig.extraArgs += extra
+    var biliDlConfig = config.biliDL
+    biliDlConfig.extraArgs += extra
 
     print("路由后端: \(config.backend(for: url).displayName)（B 站？\(URLExtractor.isBilibiliHost(url) ? "是" : "否")）")
     print("下载目录: \(downloadDir)")
@@ -241,17 +243,18 @@ func downloadTest(_ url: String, extra: [String] = []) async {
     print("BV      : \(CanonicalKey.videoID(in: url) ?? "（未能解析，可能是短链）")")
     if !extra.isEmpty { print("附加参数: \(extra.joined(separator: " "))") }
 
-    if config.backend(for: url) == .yutto, let binary = Subprocess.lookupOnPATH(yuttoConfig.binary) {
-        let argv = YuttoArgs.build(
-            config: yuttoConfig, url: url, downloadDir: downloadDir, workDir: workDir,
-            authFileExists: AuthFile.exists(path: yuttoConfig.authFile), binaryPath: binary
+    if config.backend(for: url) == .biliDL,
+       let binary = BundledTool.resolveBiliDl(configured: biliDlConfig.binary) {
+        let argv = BiliDlArgs.build(
+            config: biliDlConfig, url: url, downloadDir: downloadDir, workDir: workDir,
+            authFileExists: AuthFile.exists(path: biliDlConfig.authFile), binaryPath: binary
         )
         print("命令    : \(argv.joined(separator: " "))")
     }
     print("")
 
-    let backend: any DownloadBackend = config.backend(for: url) == .yutto
-        ? YuttoBackend(config: yuttoConfig, downloadDir: downloadDir, timeout: TimeInterval(config.yuttoTimeout))
+    let backend: any DownloadBackend = config.backend(for: url) == .biliDL
+        ? BiliDlBackend(config: biliDlConfig, downloadDir: downloadDir, timeout: TimeInterval(config.biliDLTimeout))
         : DownieBackend(config: config.downie, downloadDir: downloadDir)
     let result = await backend.download(url: url, workDir: workDir, handle: ProcessHandle()) { line in
         print("  │ \(line)")
@@ -328,10 +331,10 @@ func configSet(_ key: String, _ value: String) async {
             guard let seconds = Int(value) else { return "poll_interval 需要整数秒" }
             store.update { $0.pollInterval = seconds }
         case "bilibili_backend":
-            guard let backend = BackendKind(rawValue: value) else { return "只能是 yutto / downie" }
+            guard let backend = BackendKind(rawValue: value) else { return "只能是 bili-dl / downie（旧值 yutto 会自动迁移到 bili-dl）" }
             store.update { $0.bilibiliBackend = backend }
         case "other_backend":
-            guard let backend = BackendKind(rawValue: value) else { return "只能是 yutto / downie" }
+            guard let backend = BackendKind(rawValue: value) else { return "只能是 bili-dl / downie（旧值 yutto 会自动迁移到 bili-dl）" }
             store.update { $0.otherBackend = backend }
         case "clipboard_monitor":
             store.update { $0.clipboardMonitor = (value == "true" || value == "1") }

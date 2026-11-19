@@ -64,9 +64,9 @@ struct OnboardingView: View {
                     Divider()
 
                     row(
-                        ok: Subprocess.lookupOnPATH(config.yutto.binary) != nil,
-                        title: "yutto",
-                        detail: Subprocess.lookupOnPATH(config.yutto.binary) ?? "找不到可执行文件，请到设置里指定"
+                        ok: BundledTool.resolveBiliDl(configured: config.biliDL.binary) != nil,
+                        title: "bili-dl（内嵌）",
+                        detail: BundledTool.resolveBiliDl(configured: config.biliDL.binary) ?? "找不到内嵌二进制，请重装 .app 或到设置里指定路径"
                     ) {
                         EmptyView()
                     }
@@ -74,9 +74,9 @@ struct OnboardingView: View {
                     Divider()
 
                     row(
-                        ok: AuthFile.exists(path: config.yutto.authFile),
+                        ok: AuthFile.exists(path: config.biliDL.authFile),
                         title: "登录态（auth.toml）",
-                        detail: AuthFile.exists(path: config.yutto.authFile)
+                        detail: AuthFile.exists(path: config.biliDL.authFile)
                             ? "已找到，可下载高画质"
                             : "未找到：最高 1080P，订阅追更会被风控"
                     ) {
