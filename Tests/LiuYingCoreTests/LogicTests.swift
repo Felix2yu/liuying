@@ -714,9 +714,9 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.backend(for: "https://twitter.com/u/status/123"), .biliDL)
         XCTAssertEqual(config.backend(for: "https://t.co/abc"), .biliDL)
 
-        // 引擎尚未支持的站点仍走 Downie。
-        XCTAssertEqual(config.backend(for: "https://www.xiaohongshu.com/explore/abc"), .downie)
-        XCTAssertEqual(config.backend(for: "https://xhslink.com/a/abc"), .downie)
+        // 小红书由内嵌引擎读 SSR 直链；抖音引擎只能识别风控壳，仍走 Downie。
+        XCTAssertEqual(config.backend(for: "https://www.xiaohongshu.com/explore/abc"), .biliDL)
+        XCTAssertEqual(config.backend(for: "https://xhslink.com/a/abc"), .biliDL)
         XCTAssertEqual(config.backend(for: "https://www.douyin.com/video/7123"), .downie)
 
         // 两个方向都能由用户改
@@ -734,6 +734,14 @@ final class ConfigTests: XCTestCase {
         XCTAssertFalse(URLExtractor.isXHost("https://www.bilibili.com/video/BV1"))
         // 长得像但不是：不能因为路径里有 x.com 就误判。
         XCTAssertFalse(URLExtractor.isXHost("https://example.com/x.com/status/1"))
+    }
+
+    func testIsXiaohongshuHost() {
+        XCTAssertTrue(URLExtractor.isXiaohongshuHost("https://www.xiaohongshu.com/explore/abc"))
+        XCTAssertTrue(URLExtractor.isXiaohongshuHost("https://xhslink.cn/o/16vUpJWByhV"))
+        XCTAssertTrue(URLExtractor.isXiaohongshuHost("https://xhslink.com/a/abc"))
+        XCTAssertFalse(URLExtractor.isXiaohongshuHost("https://www.douyin.com/video/7123"))
+        XCTAssertFalse(URLExtractor.isXiaohongshuHost("https://example.com/xhslink.cn/o/abc"))
     }
 
     func testRoutingSurvivesRoundTrip() throws {

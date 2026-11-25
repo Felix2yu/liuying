@@ -18,7 +18,9 @@ iPhone 快捷指令 → iCloud Drive → Mac 常驻 → 自动下载 B 站视频
 | 链接 | 后端 | 默认 |
 | --- | --- | --- |
 | `b23.tv` / `bilibili.com` / `bilibili.tv` | bili-dl（内嵌） | bili-dl（内嵌） |
-| 其它一切 http(s) 链接 | Downie | Downie |
+| `x.com` / `twitter.com` / `t.co` | bili-dl（内嵌，HLS） | bili-dl（内嵌） |
+| `xiaohongshu.com` / `xhslink.cn` | bili-dl（内嵌，首屏 SSR 直链） | bili-dl（内嵌） |
+| 其它一切 http(s) 链接（含抖音） | Downie | Downie |
 
 两个方向都能在「设置 → Downie → 路由」里改。后端在**任务开始下载那一刻**按当前设置选定，排队中的任务改设置后会跟着换。
 想看某个链接会怎么走：`liuyingctl route <url>`（只打印命令，不下载）。
