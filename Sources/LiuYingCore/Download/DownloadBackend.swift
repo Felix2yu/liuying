@@ -98,15 +98,6 @@ public struct BiliDlBackend: DownloadBackend {
         Log.info("bili-dl 开始下载：\(url)")
         Log.debug("命令：\(args.joined(separator: " "))")
 
-        let before: FileSnapshot
-        guard let captured = await FileSnapshot.capture(root: downloadDir) else {
-            return DownloadResult(
-                success: false,
-                errorMessage: "无法读取下载目录（可能缺少文件访问权限）：\(downloadDir)"
-            )
-        }
-        before = captured
-
         let tail = LogTail()
         let result = await Subprocess.run(
             executable: binary,
@@ -142,50 +133,20 @@ public struct BiliDlBackend: DownloadBackend {
             )
         }
 
-        // 优先读结构化结果：它明确回答「下成了哪些文件」，不依赖目录前后差集。
-        if let report = BiliDlReport.load(path: resultPath) {
-            return await finishFromReport(
-                report, exitCode: result.exitCode,
-                stdout: result.stdout + result.stderr, tail: tail.snapshot
-            )
-        }
-
-        // 回退路径：机器上装的是不支持 --result-json 的旧版二进制。
-        // 未知 flag 会被旧解析器整条忽略（等号形式不会泄漏成位置参数），
-        // 因此这里仍按老办法用退出码 + 目录差集判定，保证旧 .app 能用。
-        Log.warning("bili-dl 未产出 result.json（可能是旧版二进制），回退到目录差集判定")
-        guard result.exitCode == 0 else {
-            let summary = String(Self.humanReadable(result.stdout + result.stderr).suffix(800))
+        // 只认结构化结果：留影与引擎同仓演进、一起打包，不存在「旧引擎」这种情况。
+        // 读不到 result.json 说明打包不完整或引擎被换掉了，直接失败比猜更有用。
+        guard let report = BiliDlReport.load(path: resultPath) else {
             return DownloadResult(
                 success: false,
-                errorMessage: "bili-dl 退出码 \(result.exitCode)：\(summary)",
+                errorMessage: "bili-dl 没有产出 result.json（退出码 \(result.exitCode)）。"
+                    + "引擎与客户端需要一起打包，请重新构建 .app。日志：\n"
+                    + String(Self.humanReadable(result.stdout + result.stderr).suffix(600)),
                 logTail: tail.snapshot
             )
         }
-
-        guard let after = await FileSnapshot.capture(root: downloadDir) else {
-            return DownloadResult(
-                success: false,
-                errorMessage: "下载结束后无法读取下载目录（可能缺少文件访问权限），无法确认产出文件"
-            )
-        }
-        let newFiles = after.newFiles(comparedTo: before)
-        if newFiles.isEmpty {
-            // 退出 0 但零产出，可能是视频已存在、输出目录不对、下载被跳过，也可能是
-            // 快照被别的进程污染。旧实现按成功处理，UI 会显示「已完成」却什么都没有，
-            // 而且没有重试入口。现在按可重试的失败处理（不删 links.txt）。
-            Log.warning("bili-dl 退出 0 但未发现新文件：\(url)")
-            return DownloadResult(
-                success: false,
-                errorMessage: "bili-dl 退出 0 但没有产出新文件：视频可能已存在、输出目录不对或下载被跳过。请查看日志；确实已下载可在队列里标记完成。",
-                logTail: tail.snapshot
-            )
-        }
-
-        let outputs = await finalize(raw: newFiles.map { BiliDlOutput(path: $0, kind: "video") })
-        Log.success("bili-dl 下载完成：\(outputs.count) 个文件")
-        return DownloadResult(
-            success: true, outputs: outputs, logTail: tail.snapshot, safeToPrune: true
+        return await finishFromReport(
+            report, exitCode: result.exitCode,
+            stdout: result.stdout + result.stderr, tail: tail.snapshot
         )
     }
 
