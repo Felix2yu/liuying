@@ -245,9 +245,23 @@ struct QueueScreen: View {
                     Spacer(minLength: 12)
 
                     if task.state == .downloading {
-                        ProgressView()
-                            .controlSize(.small)
-                            .accessibilityLabel(Text("正在下载"))
+                        if let progress = liveProgress(for: task) {
+                            HStack(spacing: 6) {
+                                ProgressView(value: min(max(progress.percent, 0), 100), total: 100)
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 64)
+                                Text(String(format: "%.0f%%", progress.percent))
+                                    .font(AppFont.rowMeta)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(Text("正在下载 \(progress.displayText)"))
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel(Text("正在下载"))
+                        }
                     }
                     StatusPill(text: task.state.displayName, color: task.state.tint)
 
@@ -272,8 +286,15 @@ struct QueueScreen: View {
         .rowCard()
     }
 
-    private func detail(_ task: DownloadTask) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    /// 只有「当前正在下载的那个任务」才有实时进度；其它行拿不到，返回 nil 退回转圈。
+    private func liveProgress(for task: DownloadTask) -> DownloadProgress? {
+        guard snapshot.currentTaskID == task.id,
+              let progress = snapshot.currentProgress,
+              progress.percent > 0 else { return nil }
+        return progress
+    }
+
+    private func detail(_ task: DownloadTask) -> some View {        VStack(alignment: .leading, spacing: 10) {
             Text(task.rawURL)
                 .font(AppFont.mono)
                 .foregroundStyle(.secondary)

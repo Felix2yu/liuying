@@ -486,13 +486,30 @@ public actor Engine {
         let backend = makeBackend(for: task.rawURL)
         Log.info("开始下载 [\(task.attempts)/3] \(display)（\(backend.name)）")
 
-        // 闭包在后台私有队列上被调用，不能直接碰 actor 状态；LogTail 自己是线程安全的。
+        // 闭包在后台私有队列上被调用，不能直接碰 actor 状态；LogTail/ProgressBox 自带锁。
         let tail = logTail
-        let result = await backend.download(
-            url: task.rawURL, workDir: workDir, handle: handle
-        ) { line in
-            tail.append(line)
+        let progressBox = ProgressBox()
+        snapshot.currentProgress = nil
+
+        // 下载期间 runLoop 被 processTask 阻塞，快照不会自己刷新，
+        // 所以这里起一个轻量 ticker 只推进度（不查库），让 UI 有实时百分比。
+        let ticker = Task { [progressBox] in
+            while !Task.isCancelled {
+                self.snapshot.currentProgress = progressBox.latest
+                self.publishProgress()
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
         }
+        defer {
+            ticker.cancel()
+            snapshot.currentProgress = nil
+        }
+
+        let result = await backend.download(
+            url: task.rawURL, workDir: workDir, handle: handle,
+            onLine: { line in tail.append(line) },
+            onProgress: { progress in progressBox.update(progress) }
+        )
 
         currentHandle = nil
         snapshot.currentTaskID = nil
@@ -879,6 +896,16 @@ public actor Engine {
     public func showMoreHistory() async {
         recentLimit = min(recentLimit + 50, 1_000)
         await publish()
+    }
+
+    /// 只推进度、不查库：下载期间约 500ms 调一次，不能每次都跑 stats/recent。
+    private func publishProgress() {
+        var next = snapshot
+        next.isPaused = paused
+        next.syncEnabled = config.dedupSync
+        next.pendingPruneCount = pendingPrune.count
+        next.currentLog = logTail.snapshot
+        sink?(next)
     }
 
     private func publish() async {

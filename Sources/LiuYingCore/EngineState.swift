@@ -8,6 +8,8 @@ public struct EngineSnapshot: Sendable, Equatable {
     public var stats: [TaskState: Int] = [:]
     public var currentTaskID: Int64?
     public var currentText: String?
+    /// 当前下载的实时进度。由 bili-dl 的 NDJSON 事件驱动，为空表示未知（如 Downie）。
+    public var currentProgress: DownloadProgress?
     public var currentLog: [String] = []
     public var lastRoundAt: Date?
     public var lastError: String?
@@ -34,7 +36,12 @@ public struct EngineSnapshot: Sendable, Equatable {
 
     public var statusLine: String {
         if isPaused { return "已暂停" }
-        if let currentText, downloadingCount > 0 { return "下载中：\(currentText)" }
+        if let currentText, downloadingCount > 0 {
+            if let progress = currentProgress, !progress.displayText.isEmpty {
+                return "下载中：\(currentText)（\(progress.displayText)）"
+            }
+            return "下载中：\(currentText)"
+        }
         if downloadingCount > 0 { return "下载中 \(downloadingCount)" }
         if pendingCount > 0 { return "待处理 \(pendingCount)" }
         return "空闲"

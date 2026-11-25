@@ -34,8 +34,21 @@ public protocol DownloadBackend: Sendable {
         url: String,
         workDir: String,
         handle: ProcessHandle,
-        onLine: @escaping @Sendable (String) -> Void
+        onLine: @escaping @Sendable (String) -> Void,
+        onProgress: @escaping @Sendable (DownloadProgress) -> Void
     ) async -> DownloadResult
+}
+
+extension DownloadBackend {
+    /// 不关心进度的后端（Downie 是异步入队，拿不到百分比）走这个重载。
+    public func download(
+        url: String,
+        workDir: String,
+        handle: ProcessHandle,
+        onLine: @escaping @Sendable (String) -> Void
+    ) async -> DownloadResult {
+        await download(url: url, workDir: workDir, handle: handle, onLine: onLine, onProgress: { _ in })
+    }
 }
 
 /// bili-dl 后端（内嵌 Go CLI，兼容 yutto argv）。参数构造在 `BiliDlArgs`（纯函数），
@@ -56,7 +69,8 @@ public struct BiliDlBackend: DownloadBackend {
         url: String,
         workDir: String,
         handle: ProcessHandle,
-        onLine: @escaping @Sendable (String) -> Void
+        onLine: @escaping @Sendable (String) -> Void,
+        onProgress: @escaping @Sendable (DownloadProgress) -> Void
     ) async -> DownloadResult {
         guard let binary = resolveBinary() else {
             return DownloadResult(
@@ -65,6 +79,11 @@ public struct BiliDlBackend: DownloadBackend {
             )
         }
 
+        // 结果文件放在每任务独立的 workDir 里：并发任务不会互相覆盖，
+        // workDir 在任务结束后由引擎删除，残留也无害。
+        let resultPath = (workDir as NSString).appendingPathComponent("result.json")
+        try? FileManager.default.removeItem(atPath: resultPath)
+
         let authExists = AuthFile.exists(path: config.authFile)
         let args = BiliDlArgs.build(
             config: config,
@@ -72,7 +91,9 @@ public struct BiliDlBackend: DownloadBackend {
             downloadDir: downloadDir,
             workDir: workDir,
             authFileExists: authExists,
-            binaryPath: binary
+            binaryPath: binary,
+            resultPath: resultPath,
+            emitProgressJSON: true
         )
         Log.info("bili-dl 开始下载：\(url)")
         Log.debug("命令：\(args.joined(separator: " "))")
@@ -85,6 +106,7 @@ public struct BiliDlBackend: DownloadBackend {
             )
         }
         before = captured
+
         let tail = LogTail()
         let result = await Subprocess.run(
             executable: binary,
@@ -96,6 +118,11 @@ public struct BiliDlBackend: DownloadBackend {
             timeout: timeout,
             handle: handle,
             onOutputLine: { line in
+                if let event = BiliDlEvent.parse(line: line) {
+                    // 机器可读事件：转成进度 + 人读日志，不把原始 JSON 灌进 UI。
+                    Self.handle(event: event, tail: tail, onLine: onLine, onProgress: onProgress)
+                    return
+                }
                 tail.append(line)
                 onLine(line)
             }
@@ -114,10 +141,21 @@ public struct BiliDlBackend: DownloadBackend {
                 logTail: tail.snapshot
             )
         }
+
+        // 优先读结构化结果：它明确回答「下成了哪些文件」，不依赖目录前后差集。
+        if let report = BiliDlReport.load(path: resultPath) {
+            return await finishFromReport(
+                report, exitCode: result.exitCode,
+                stdout: result.stdout + result.stderr, tail: tail.snapshot
+            )
+        }
+
+        // 回退路径：机器上装的是不支持 --result-json 的旧版二进制。
+        // 未知 flag 会被旧解析器整条忽略（等号形式不会泄漏成位置参数），
+        // 因此这里仍按老办法用退出码 + 目录差集判定，保证旧 .app 能用。
+        Log.warning("bili-dl 未产出 result.json（可能是旧版二进制），回退到目录差集判定")
         guard result.exitCode == 0 else {
-            let output = (result.stdout + result.stderr)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let summary = String(output.suffix(800))
+            let summary = String(Self.humanReadable(result.stdout + result.stderr).suffix(800))
             return DownloadResult(
                 success: false,
                 errorMessage: "bili-dl 退出码 \(result.exitCode)：\(summary)",
@@ -144,21 +182,123 @@ public struct BiliDlBackend: DownloadBackend {
             )
         }
 
-        let ffprobe = Subprocess.lookupOnPATH("ffprobe")
-        let ffmpeg = Subprocess.lookupOnPATH("ffmpeg")
-        var outputs: [TaskOutput] = []
-        for file in newFiles {
-            let finalPath = await ContainerFinalizer.finalize(
-                path: file, policy: config.outputContainers,
-                ffprobePath: ffprobe, ffmpegPath: ffmpeg
-            )
-            let bytes = Self.fileSize(finalPath)
-            outputs.append(TaskOutput(path: finalPath, kind: "video", bytes: bytes))
-        }
+        let outputs = await finalize(raw: newFiles.map { BiliDlOutput(path: $0, kind: "video") })
         Log.success("bili-dl 下载完成：\(outputs.count) 个文件")
         return DownloadResult(
             success: true, outputs: outputs, logTail: tail.snapshot, safeToPrune: true
         )
+    }
+
+    /// 从进程输出里剔掉 NDJSON 事件行，只留人读文本。
+    ///
+    /// 开启 --progress-json 后 stdout 混着事件行，直接塞进错误提示会变成
+    /// 一长串 `{"event":"start",…}`，对用户毫无意义。
+    static func humanReadable(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { BiliDlEvent.parse(line: String($0)) == nil }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 把一条 NDJSON 事件转成人读日志与进度。
+    /// progress 事件频率高（数百毫秒一次），只喂进度、不进日志，否则日志会被刷屏。
+    static func handle(
+        event: BiliDlEvent,
+        tail: LogTail,
+        onLine: @Sendable (String) -> Void,
+        onProgress: @Sendable (DownloadProgress) -> Void
+    ) {
+        switch event.event {
+        case "progress":
+            onProgress(event.progress)
+        case "done":
+            onProgress(event.progress)
+            emit(event, prefix: "完成", tail: tail, onLine: onLine)
+        case "error":
+            emit(event, prefix: "失败", tail: tail, onLine: onLine)
+        default: // start 及未来新增的事件类型
+            emit(event, prefix: "开始", tail: tail, onLine: onLine)
+        }
+    }
+
+    private static func emit(
+        _ event: BiliDlEvent,
+        prefix: String,
+        tail: LogTail,
+        onLine: @Sendable (String) -> Void
+    ) {
+        let label = DownloadProgress(kind: event.kind ?? "").displayText
+        let lead = label.isEmpty ? "" : label + " "
+        let text = lead + prefix + "：" + (event.message ?? "")
+        tail.append(text)
+        onLine(text)
+    }
+
+    /// 按 result.json 的终态构造结果。
+    private func finishFromReport(
+        _ report: BiliDlReport,
+        exitCode: Int32,
+        stdout: String,
+        tail: [String]
+    ) async -> DownloadResult {
+        switch report.state {
+        case "succeeded":
+            let outputs = await finalize(raw: report.outputs)
+            guard !outputs.isEmpty else {
+                // 报告成功但清单为空，说明结果文件与产物不一致，宁可当失败重试也不要静默成功。
+                return DownloadResult(
+                    success: false,
+                    errorMessage: "bili-dl 报告成功但产物清单为空，无法确认下载结果",
+                    logTail: tail
+                )
+            }
+            Log.success("bili-dl 下载完成：\(outputs.count) 个文件")
+            return DownloadResult(success: true, outputs: outputs, logTail: tail, safeToPrune: true)
+
+        case "canceled":
+            return DownloadResult(success: false, errorMessage: "已取消", cancelled: true, logTail: tail)
+
+        case "partial":
+            let done = report.targets.filter { $0.state == "succeeded" }.count
+            let total = max(report.targets.count, done)
+            return DownloadResult(
+                success: false,
+                errorMessage: "部分内容下载失败（成功 \(done)/\(total)）："
+                    + (report.failureSummary ?? "未知原因"),
+                logTail: tail
+            )
+
+        default: // failed / 未知状态
+            let human = Self.humanReadable(stdout)
+            let summary = report.failureSummary
+                ?? (human.isEmpty ? "下载失败（bili-dl 未给出原因）" : String(human.suffix(500)))
+            return DownloadResult(
+                success: false,
+                errorMessage: "bili-dl 退出码 \(exitCode)：\(summary)",
+                logTail: tail
+            )
+        }
+    }
+
+    /// 把产物规整到目标容器，并按真实文件大小回报。
+    ///
+    /// 只对媒体文件做 remux：封面/弹幕/字幕交给容器策略没有意义，
+    /// 反而可能被 ffmpeg 改坏。
+    private func finalize(raw: [BiliDlOutput]) async -> [TaskOutput] {
+        let ffprobe = Subprocess.lookupOnPATH("ffprobe")
+        let ffmpeg = Subprocess.lookupOnPATH("ffmpeg")
+        var outputs: [TaskOutput] = []
+        for item in raw {
+            var path = item.path
+            if item.kind == "video" || item.kind == "audio" {
+                path = await ContainerFinalizer.finalize(
+                    path: path, policy: config.outputContainers,
+                    ffprobePath: ffprobe, ffmpegPath: ffmpeg
+                )
+            }
+            outputs.append(TaskOutput(path: path, kind: item.kind, bytes: Self.fileSize(path) ?? item.bytes))
+        }
+        return outputs
     }
 
     private func resolveBinary() -> String? {
@@ -189,8 +329,10 @@ public struct DownieBackend: DownloadBackend {
         url: String,
         workDir: String,
         handle: ProcessHandle,
-        onLine: @escaping @Sendable (String) -> Void
+        onLine: @escaping @Sendable (String) -> Void,
+        onProgress: @escaping @Sendable (DownloadProgress) -> Void
     ) async -> DownloadResult {
+        // Downie 是异步入队，脚本侧拿不到百分比，onProgress 永不触发。
         guard let appPath = Self.resolveAppPath(configured: config.appName) else {
             return DownloadResult(
                 success: false,

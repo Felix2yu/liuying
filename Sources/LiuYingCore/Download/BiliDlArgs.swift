@@ -11,7 +11,9 @@ public enum BiliDlArgs {
         downloadDir: String,
         workDir: String? = nil,
         authFileExists: Bool = false,
-        binaryPath: String
+        binaryPath: String,
+        resultPath: String? = nil,
+        emitProgressJSON: Bool = false
     ) -> [String] {
         var args: [String] = [binaryPath]
 
@@ -22,8 +24,21 @@ public enum BiliDlArgs {
 
         args += [url, "-d", downloadDir, "--no-progress", "--no-color"]
 
-        // --tmp-dir 是 yutto 兼容参数；bili-dl 的宽松解析器接受但不改动产物落点
-        // （产物一律进 -d，由 FileSnapshot 差集发现）。保留以对齐 yutto argv 契约。
+        // NDJSON 进度：stdout 每行一个事件，由 DownloadBackend 解析成 DownloadProgress。
+        // 与 --no-progress 不冲突：前者关掉人读的进度条，后者开启机器读的事件流。
+        if emitProgressJSON {
+            args.append("--progress-json")
+        }
+
+        // 结构化结果。刻意用等号形式（--result-json=<path>）：单个 token，
+        // 老版本 bili-dl 不认识该 flag 时会整条忽略，不会把路径当成位置参数
+        // 当成第二个待下载 URL —— 这正是「旧内嵌二进制也能跑」的前提。
+        if let resultPath, !resultPath.isEmpty {
+            args.append("--result-json=\(resultPath)")
+        }
+
+        // --tmp-dir 是 yutto 兼容参数；bili-dl 的宽松解析器接受但不改动产物落点。
+        // 保留以对齐 yutto argv 契约（产物位置以 --result-json 为准，不再靠目录差集）。
         if let workDir {
             args += ["--tmp-dir", workDir]
         }

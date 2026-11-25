@@ -247,7 +247,10 @@ func downloadTest(_ url: String, extra: [String] = []) async {
        let binary = BundledTool.resolveBiliDl(configured: biliDlConfig.binary) {
         let argv = BiliDlArgs.build(
             config: biliDlConfig, url: url, downloadDir: downloadDir, workDir: workDir,
-            authFileExists: AuthFile.exists(path: biliDlConfig.authFile), binaryPath: binary
+            authFileExists: AuthFile.exists(path: biliDlConfig.authFile), binaryPath: binary,
+            // 与 BiliDlBackend 实际使用的参数保持一致，否则这行「命令:」会误导排查。
+            resultPath: (workDir as NSString).appendingPathComponent("result.json"),
+            emitProgressJSON: true
         )
         print("命令    : \(argv.joined(separator: " "))")
     }
