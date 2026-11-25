@@ -218,11 +218,11 @@ public struct AppConfig: Codable, Sendable, Equatable {
         }
     }
 
-    /// 按链接选后端：B 站四个主机之外的一切 URL 都归 downie。
+    /// 按链接选后端：内嵌引擎支持的站点（B 站、X）走 bili-dl，其余交给 Downie。
     /// 这是**路由**，不是「失败后回退」——后端在任务开始下载时按当前配置选定，
     /// 入队后没有单独持久化，排队中的任务改设置会跟着换。
     public func backend(for url: String) -> BackendKind {
-        URLExtractor.isBilibiliHost(url) ? bilibiliBackend : otherBackend
+        URLExtractor.usesEmbeddedEngine(url) ? bilibiliBackend : otherBackend
     }
 
     /// 旧版 config.json 的形状，用于首次启动导入历史设置。

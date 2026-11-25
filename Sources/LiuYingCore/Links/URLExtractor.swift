@@ -80,6 +80,24 @@ public enum URLExtractor {
         return bilibiliHosts.contains(host)
     }
 
+    /// X（原 Twitter）的域名。公开推文由内嵌引擎直接下载（syndication 端点 + HLS）。
+    static let xHosts: Set<String> = [
+        "x.com", "twitter.com", "t.co", "mobile.x.com", "mobile.twitter.com",
+    ]
+
+    public static func isXHost(_ url: String) -> Bool {
+        guard let host = URLComponents(string: url)?.host?.lowercased() else { return false }
+        return xHosts.contains(host)
+    }
+
+    /// 是否由内嵌引擎（bili-dl）处理。
+    ///
+    /// 引擎与客户端同仓演进、一起打包，所以这里判断的是「能力」而非「兼容」：
+    /// 引擎支持哪一类站点，这里就路由哪一类，其余仍交给 Downie。
+    public static func usesEmbeddedEngine(_ url: String) -> Bool {
+        isBilibiliHost(url) || isXHost(url)
+    }
+
     /// 只放行 http/https 且主机非空的 URL，挡掉畸形链接。
     static func hasValidHost(_ url: String) -> Bool {
         guard let components = URLComponents(string: url) else { return false }

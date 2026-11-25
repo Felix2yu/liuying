@@ -708,15 +708,32 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.backend(for: "https://www.bilibili.com/video/BV1GJ411x7h7"), .biliDL)
         XCTAssertEqual(config.backend(for: "https://b23.tv/abc123"), .biliDL)
         XCTAssertEqual(config.backend(for: "https://bilibili.tv/zh/video/BV1GJ411x7h7"), .biliDL)
+
+        // X 由内嵌引擎处理（syndication + HLS），不再交给 Downie。
+        XCTAssertEqual(config.backend(for: "https://x.com/i/status/1"), .biliDL)
+        XCTAssertEqual(config.backend(for: "https://twitter.com/u/status/123"), .biliDL)
+        XCTAssertEqual(config.backend(for: "https://t.co/abc"), .biliDL)
+
+        // 引擎尚未支持的站点仍走 Downie。
         XCTAssertEqual(config.backend(for: "https://www.xiaohongshu.com/explore/abc"), .downie)
         XCTAssertEqual(config.backend(for: "https://xhslink.com/a/abc"), .downie)
-        XCTAssertEqual(config.backend(for: "https://x.com/i/status/1"), .downie)
+        XCTAssertEqual(config.backend(for: "https://www.douyin.com/video/7123"), .downie)
 
         // 两个方向都能由用户改
         config.bilibiliBackend = .downie
         config.otherBackend = .biliDL
         XCTAssertEqual(config.backend(for: "https://b23.tv/abc"), .downie)
+        XCTAssertEqual(config.backend(for: "https://x.com/u/status/1"), .downie)
         XCTAssertEqual(config.backend(for: "https://example.com/a"), .biliDL)
+    }
+
+    func testIsXHost() {
+        XCTAssertTrue(URLExtractor.isXHost("https://x.com/u/status/1"))
+        XCTAssertTrue(URLExtractor.isXHost("https://mobile.twitter.com/u/status/1"))
+        XCTAssertTrue(URLExtractor.isXHost("https://t.co/abc"))
+        XCTAssertFalse(URLExtractor.isXHost("https://www.bilibili.com/video/BV1"))
+        // 长得像但不是：不能因为路径里有 x.com 就误判。
+        XCTAssertFalse(URLExtractor.isXHost("https://example.com/x.com/status/1"))
     }
 
     func testRoutingSurvivesRoundTrip() throws {
