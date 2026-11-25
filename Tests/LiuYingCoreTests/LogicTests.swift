@@ -714,10 +714,11 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.backend(for: "https://twitter.com/u/status/123"), .biliDL)
         XCTAssertEqual(config.backend(for: "https://t.co/abc"), .biliDL)
 
-        // 小红书由内嵌引擎读 SSR 直链；抖音引擎只能识别风控壳，仍走 Downie。
+        // 小红书读首屏 SSR，抖音带 ttwid 二次请求读 videoInfoRes，都走内嵌引擎。
         XCTAssertEqual(config.backend(for: "https://www.xiaohongshu.com/explore/abc"), .biliDL)
         XCTAssertEqual(config.backend(for: "https://xhslink.com/a/abc"), .biliDL)
-        XCTAssertEqual(config.backend(for: "https://www.douyin.com/video/7123"), .downie)
+        XCTAssertEqual(config.backend(for: "https://www.douyin.com/video/7123"), .biliDL)
+        XCTAssertEqual(config.backend(for: "https://v.douyin.com/abc/"), .biliDL)
 
         // 两个方向都能由用户改
         config.bilibiliBackend = .downie
@@ -742,6 +743,13 @@ final class ConfigTests: XCTestCase {
         XCTAssertTrue(URLExtractor.isXiaohongshuHost("https://xhslink.com/a/abc"))
         XCTAssertFalse(URLExtractor.isXiaohongshuHost("https://www.douyin.com/video/7123"))
         XCTAssertFalse(URLExtractor.isXiaohongshuHost("https://example.com/xhslink.cn/o/abc"))
+    }
+
+    func testIsDouyinHost() {
+        XCTAssertTrue(URLExtractor.isDouyinHost("https://v.douyin.com/fy9rPadJ1SU/"))
+        XCTAssertTrue(URLExtractor.isDouyinHost("https://www.iesdouyin.com/share/video/7123/"))
+        XCTAssertTrue(URLExtractor.isDouyinHost("https://www.douyin.com/video/7123"))
+        XCTAssertFalse(URLExtractor.isDouyinHost("https://example.com/v.douyin.com/abc"))
     }
 
     func testRoutingSurvivesRoundTrip() throws {

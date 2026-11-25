@@ -101,13 +101,23 @@ public enum URLExtractor {
         return xiaohongshuHosts.contains(host)
     }
 
+    /// 抖音的域名。分享页带 ttwid 二次请求可拿到 play_addr，已由内嵌引擎直接下载。
+    static let douyinHosts: Set<String> = [
+        "douyin.com", "www.douyin.com", "douyin.com.cn", "www.douyin.com.cn",
+        "iesdouyin.com", "www.iesdouyin.com", "v.douyin.com",
+    ]
+
+    public static func isDouyinHost(_ url: String) -> Bool {
+        guard let host = URLComponents(string: url)?.host?.lowercased() else { return false }
+        return douyinHosts.contains(host)
+    }
+
     /// 是否由内嵌引擎（bili-dl）处理。
     ///
     /// 引擎与客户端同仓演进、一起打包，所以这里判断的是「能力」而非「兼容」：
     /// 引擎支持哪一类站点，这里就路由哪一类，其余仍交给 Downie。
     public static func usesEmbeddedEngine(_ url: String) -> Bool {
-        // 抖音暂不在此列：引擎只能识别风控壳、给不出直链，交给 Downie 更合适。
-        isBilibiliHost(url) || isXHost(url) || isXiaohongshuHost(url)
+        isBilibiliHost(url) || isXHost(url) || isXiaohongshuHost(url) || isDouyinHost(url)
     }
 
     /// 只放行 http/https 且主机非空的 URL，挡掉畸形链接。
