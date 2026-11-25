@@ -1,6 +1,6 @@
 import Foundation
 
-/// bili-dl `--progress-json` 的 NDJSON 单行事件。
+/// liuying-engine `--progress-json` 的 NDJSON 单行事件。
 ///
 /// 只声明用得到的字段：未知字段由 Decodable 自动忽略，
 /// 这样 Go 侧新增字段不会让旧客户端解析失败。
@@ -99,7 +99,7 @@ public struct BiliDlReport: Decodable, Sendable {
     }
 
     /// 读取结果文件；文件不存在或不是合法 JSON 时返回 nil。
-    /// 返回 nil 表示「这批 bili-dl 不支持 --result-json」，调用方应回退到目录差集。
+    /// 返回 nil 表示「这批 liuying-engine 不支持 --result-json」，调用方应回退到目录差集。
     public static func load(path: String) -> BiliDlReport? {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
         return try? JSONDecoder().decode(BiliDlReport.self, from: data)

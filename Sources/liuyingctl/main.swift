@@ -21,7 +21,7 @@ func doctor() {
 
     print("-- 外部依赖解析 --")
     let biliDl = BundledTool.resolveBiliDl(configured: AppConfig().biliDL.binary) ?? "(未找到)"
-    print("  bili-dl  \(biliDl)\(biliDl == "(未找到)" ? "（.app 内嵌或 PATH 均未找到）" : "")")
+    print("  liuying-engine  \(biliDl)\(biliDl == "(未找到)" ? "（.app 内嵌或 PATH 均未找到）" : "")")
     for tool in ["ffmpeg", "ffprobe"] {
         let resolved = Subprocess.lookupOnPATH(tool) ?? "(未找到)"
         print("  \(tool.padding(toLength: 8, withPad: " ", startingAt: 0)) \(resolved)")
@@ -44,13 +44,13 @@ func doctor() {
     }
 
     if let biliDl = BundledTool.resolveBiliDl(configured: AppConfig().biliDL.binary) {
-        // bili-dl 没有 --version；只确认可执行文件能启动（无参时打印用法、退出 2 属正常）。
+        // liuying-engine 没有 --version；只确认可执行文件能启动（无参时打印用法、退出 2 属正常）。
         let result = Subprocess.runBlocking(
             executable: biliDl, arguments: [],
             environment: Subprocess.environment(), timeout: 30
         )
         print("")
-        print("-- bili-dl 可执行性 --")
+        print("-- liuying-engine 可执行性 --")
         print("  launched=\(result.launched) exit=\(result.exitCode)（无参退出 2 = 打印用法，正常）")
     }
 }
@@ -212,7 +212,7 @@ func routeReport(_ urls: [String]) async {
                 )
                 print("  命令 → \(argv.joined(separator: " "))")
             } else {
-                print("  命令 → ⚠️ 找不到 bili-dl 可执行文件（.app 内嵌或 PATH）")
+                print("  命令 → ⚠️ 找不到 liuying-engine 可执行文件（.app 内嵌或 PATH）")
             }
         case .downie:
             let scheme = DownieBackend.schemeURL(config: config.downie, url: url, downloadDir: downloadDir)
@@ -334,10 +334,10 @@ func configSet(_ key: String, _ value: String) async {
             guard let seconds = Int(value) else { return "poll_interval 需要整数秒" }
             store.update { $0.pollInterval = seconds }
         case "bilibili_backend":
-            guard let backend = BackendKind(rawValue: value) else { return "只能是 bili-dl / downie（旧值 yutto 会自动迁移到 bili-dl）" }
+            guard let backend = BackendKind(rawValue: value) else { return "只能是 liuying-engine / downie（旧值 yutto 会自动迁移到 liuying-engine）" }
             store.update { $0.bilibiliBackend = backend }
         case "other_backend":
-            guard let backend = BackendKind(rawValue: value) else { return "只能是 bili-dl / downie（旧值 yutto 会自动迁移到 bili-dl）" }
+            guard let backend = BackendKind(rawValue: value) else { return "只能是 liuying-engine / downie（旧值 yutto 会自动迁移到 liuying-engine）" }
             store.update { $0.otherBackend = backend }
         case "clipboard_monitor":
             store.update { $0.clipboardMonitor = (value == "true" || value == "1") }

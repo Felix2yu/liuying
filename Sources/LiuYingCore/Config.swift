@@ -1,23 +1,23 @@
 import Foundation
 
 public enum BackendKind: String, Codable, Sendable, CaseIterable {
-    /// B 站后端：内嵌的 bili-dl（Go CLI，兼容 yutto argv）。rawValue 用带连字符的名字，
+    /// B 站后端：内嵌的 liuying-engine（Go CLI，兼容 yutto argv）。rawValue 用带连字符的名字，
     /// 旧配置里写的 "yutto" 由自定义解码迁移到这里。
-    case biliDL = "bili-dl"
+    case biliDL = "liuying-engine"
     case downie
 
     public var displayName: String {
         switch self {
-        case .biliDL: "bili-dl"
+        case .biliDL: "liuying-engine"
         case .downie: "Downie"
         }
     }
 
-    /// 旧配置里的 `"yutto"` 平滑迁移到 bili-dl；其它未知值按损坏值抛错，
-    /// 由调用方的 `value(_:fallback:)` 回退到各自默认值。
+    /// 旧配置里的 `"yutto"`、仓库改名前的 `"bili-dl"` 都迁移到 liuying-engine；
+    /// 其它未知值按损坏值抛错，由调用方的 `value(_:fallback:)` 回退到各自默认值。
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
-        if raw == "yutto" {
+        if raw == "yutto" || raw == "bili-dl" {
             self = .biliDL
             return
         }
@@ -31,10 +31,10 @@ public enum BackendKind: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// bili-dl 段配置。默认值对齐原 yutto 的 DEFAULT_CONFIG，bili-dl 接受同一套 argv。
+/// liuying-engine 段配置。默认值对齐原 yutto 的 DEFAULT_CONFIG，liuying-engine 接受同一套 argv。
 public struct BiliDlConfig: Codable, Sendable, Equatable {
-    /// 留空 / 默认名都优先用 .app 内嵌的 bili-dl；填绝对路径可覆盖。
-    public var binary = "bili-dl"
+    /// 留空 / 默认名都优先用 .app 内嵌的 liuying-engine；填绝对路径可覆盖。
+    public var binary = "liuying-engine"
     public var videoQuality = 127
     public var audioQuality = 30_280
     public var vcodec = "av1:copy"
@@ -45,7 +45,7 @@ public struct BiliDlConfig: Codable, Sendable, Equatable {
     public var downloadDanmaku = false
     public var downloadSubtitle = false
     public var saveCover = false
-    /// bili-dl 直接读 yutto 的 auth.toml（[profiles.<name>].sessdata），保持登录态零迁移。
+    /// liuying-engine 直接读 yutto 的 auth.toml（[profiles.<name>].sessdata），保持登录态零迁移。
     public var authFile = "~/.config/yutto/auth.toml"
     public var authProfile = "default"
     public var extraArgs: [String] = []
@@ -121,9 +121,9 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public var watchFile = ""
     public var pollInterval = 15
     public var downloadDir = "~/Downloads/Bilibili"
-    /// B 站主机（b23.tv / bilibili.com / bilibili.tv）走哪个后端。默认内嵌 bili-dl。
+    /// B 站主机（b23.tv / bilibili.com / bilibili.tv）走哪个后端。默认内嵌 liuying-engine。
     public var bilibiliBackend: BackendKind = .biliDL
-    /// 其余 http(s) 链接走哪个后端。默认 Downie —— bili-dl 只认 B 站。
+    /// 其余 http(s) 链接走哪个后端。默认 Downie —— liuying-engine 只认 B 站。
     public var otherBackend: BackendKind = .downie
     public var maxTasksPerRound = 20
     public var notify = true
@@ -136,7 +136,7 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public var subscriptionInterval = 1_800
     /// 手动覆盖 SESSDATA；留空则从 auth.toml 读。
     public var sessdataOverride = ""
-    /// 单次 bili-dl 调用超时（秒）。旧版用环境变量 BILI_WATCHER_TIMEOUT，默认 3600。
+    /// 单次 liuying-engine 调用超时（秒）。旧版用环境变量 BILI_WATCHER_TIMEOUT，默认 3600。
     public var biliDLTimeout = 3_600
     /// 跨设备去重同步：把已入队链接的键写进 links.txt 同目录的清单随 iCloud 同步，
     /// 新机启动先导入，避免空库把 links.txt 里的旧链接全部重新下载。
@@ -218,7 +218,7 @@ public struct AppConfig: Codable, Sendable, Equatable {
         }
     }
 
-    /// 按链接选后端：内嵌引擎支持的站点（B 站、X）走 bili-dl，其余交给 Downie。
+    /// 按链接选后端：内嵌引擎支持的站点（B 站、X）走 liuying-engine，其余交给 Downie。
     /// 这是**路由**，不是「失败后回退」——后端在任务开始下载时按当前配置选定，
     /// 入队后没有单独持久化，排队中的任务改设置会跟着换。
     public func backend(for url: String) -> BackendKind {
@@ -268,7 +268,7 @@ private extension KeyedDecodingContainer {
     }
 }
 
-/// B 站画质/音质档位。数值与 yutto 2.2.0 的 `--help` 一致，bili-dl 接受同一套 qn/id。
+/// B 站画质/音质档位。数值与 yutto 2.2.0 的 `--help` 一致，liuying-engine 接受同一套 qn/id。
 public enum BiliQuality {
     public static let videoOptions: [(value: Int, label: String)] = [
         (127, "8K"), (126, "杜比视界"), (125, "4K·HDR10"), (120, "4K"),

@@ -11,7 +11,7 @@ public actor BiliClient {
     private let session: URLSession
     private var sessdata: String?
     private var keyCache: (img: String, sub: String, fetchedAt: Date)?
-    /// bili-dl 用 10 分钟刷新一次密钥。
+    /// liuying-engine 用 10 分钟刷新一次密钥。
     private let keyTTL: TimeInterval = 600
 
     public init(sessdata: String? = nil, session: URLSession? = nil) {

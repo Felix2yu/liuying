@@ -138,10 +138,10 @@ final class BiliDlArgsTests: XCTestCase {
             downloadDir: "/Downloads/Bilibili",
             workDir: "/support/work/task-7",
             authFileExists: false,
-            binaryPath: "/Applications/流影.app/Contents/MacOS/bili-dl"
+            binaryPath: "/Applications/流影.app/Contents/MacOS/liuying-engine"
         )
         XCTAssertEqual(args, [
-            "/Applications/流影.app/Contents/MacOS/bili-dl",
+            "/Applications/流影.app/Contents/MacOS/liuying-engine",
             "--batch",
             url,
             "-d", "/Downloads/Bilibili",
@@ -167,7 +167,7 @@ final class BiliDlArgsTests: XCTestCase {
         config.saveCover = true
         let args = BiliDlArgs.build(
             config: config, url: url, downloadDir: "/d",
-            binaryPath: "bili-dl"
+            binaryPath: "liuying-engine"
         )
         XCTAssertFalse(args.contains("--batch"))
         XCTAssertFalse(args.contains("--no-danmaku"))
@@ -178,13 +178,13 @@ final class BiliDlArgsTests: XCTestCase {
 
     func testAuthFileFlagsOnlyWhenFileExists() {
         let without = BiliDlArgs.build(
-            config: BiliDlConfig(), url: url, downloadDir: "/d", authFileExists: false, binaryPath: "bili-dl"
+            config: BiliDlConfig(), url: url, downloadDir: "/d", authFileExists: false, binaryPath: "liuying-engine"
         )
         XCTAssertFalse(without.contains("--auth-file"))
         XCTAssertFalse(without.contains("--auth-profile"))
 
         let with = BiliDlArgs.build(
-            config: BiliDlConfig(), url: url, downloadDir: "/d", authFileExists: true, binaryPath: "bili-dl"
+            config: BiliDlConfig(), url: url, downloadDir: "/d", authFileExists: true, binaryPath: "liuying-engine"
         )
         XCTAssertTrue(with.contains("--auth-file"))
         XCTAssertTrue(with.contains("--auth-profile"))
@@ -195,7 +195,7 @@ final class BiliDlArgsTests: XCTestCase {
         var config = BiliDlConfig()
         config.extraArgs = ["--proxy", "http://127.0.0.1:6152", "-n", "4"]
         let args = BiliDlArgs.build(
-            config: config, url: url, downloadDir: "/d", binaryPath: "bili-dl"
+            config: config, url: url, downloadDir: "/d", binaryPath: "liuying-engine"
         )
         XCTAssertEqual(Array(args.suffix(4)), ["--proxy", "http://127.0.0.1:6152", "-n", "4"])
     }
@@ -208,7 +208,7 @@ final class BiliDlArgsTests: XCTestCase {
         config.subpathTemplate = ""
         config.videoQuality = 0
         config.audioQuality = 0
-        let args = BiliDlArgs.build(config: config, url: url, downloadDir: "/d", binaryPath: "bili-dl")
+        let args = BiliDlArgs.build(config: config, url: url, downloadDir: "/d", binaryPath: "liuying-engine")
         for flag in ["--vcodec", "--download-vcodec-priority", "--output-format", "-tp", "-q", "-aq"] {
             XCTAssertFalse(args.contains(flag), "\(flag) 不该出现")
         }
@@ -638,7 +638,7 @@ final class ConfigTests: XCTestCase {
           "other_backend": "yutto",
           "notify": false,
           "yutto": {
-            "binary": "/Applications/流影.app/Contents/MacOS/bili-dl",
+            "binary": "/Applications/流影.app/Contents/MacOS/liuying-engine",
             "video_quality": 120,
             "vcodec_priority": ["hevc", "av1", "avc"],
             "extra_args": ["-x", "auto"]
@@ -652,7 +652,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.bilibiliBackend, .downie)
         XCTAssertEqual(config.otherBackend, .biliDL)
         XCTAssertFalse(config.notify)
-        XCTAssertEqual(config.biliDL.binary, "/Applications/流影.app/Contents/MacOS/bili-dl")
+        XCTAssertEqual(config.biliDL.binary, "/Applications/流影.app/Contents/MacOS/liuying-engine")
         XCTAssertEqual(config.biliDL.videoQuality, 120)
         XCTAssertEqual(config.biliDL.vcodecPriority, ["hevc", "av1", "avc"])
         XCTAssertEqual(config.biliDL.extraArgs, ["-x", "auto"])
@@ -768,11 +768,12 @@ final class ConfigTests: XCTestCase {
     }
 
     /// 完全替代 yutto：旧的 "yutto" 路由值、yutto 配置段、yutto_timeout 都要迁过来。
+    /// 仓库改名前的 "bili-dl" 路由值也要迁到当前 rawValue，避免用户设置丢失。
     func testMigratesLegacyYuttoKeys() throws {
         let json = """
         {
           "bilibili_backend": "yutto",
-          "other_backend": "yutto",
+          "other_backend": "bili-dl",
           "yutto_timeout": 7200,
           "yutto": {"video_quality": 64, "auth_profile": "vip", "save_cover": true}
         }
@@ -811,12 +812,12 @@ final class ConfigTests: XCTestCase {
 final class BundledToolTests: XCTestCase {
     /// 相对名走内嵌/PATH 解析；裸测试进程不在 .app 里，断言只要求「不崩且结果可为 nil」。
     func testRelativeNameResolvesWithoutCrash() {
-        _ = BundledTool.resolveBiliDl(configured: "bili-dl")
+        _ = BundledTool.resolveBiliDl(configured: "liuying-engine")
     }
 
     /// 显式绝对路径必须是可执行的才返回，否则 nil（不允许配置把下载引到坏路径）。
     func testAbsolutePathRequiresExecutable() {
-        XCTAssertNil(BundledTool.resolveBiliDl(configured: "/definitely/not/a/real/bili-dl"))
+        XCTAssertNil(BundledTool.resolveBiliDl(configured: "/definitely/not/a/real/liuying-engine"))
         XCTAssertEqual(
             BundledTool.resolveBiliDl(configured: "/bin/sh"),
             "/bin/sh"

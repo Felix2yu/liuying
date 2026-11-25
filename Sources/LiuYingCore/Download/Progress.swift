@@ -1,6 +1,6 @@
 import Foundation
 
-/// 一次下载动作的进度快照，来自 bili-dl 的 `--progress-json` NDJSON 事件。
+/// 一次下载动作的进度快照，来自 liuying-engine 的 `--progress-json` NDJSON 事件。
 ///
 /// 只保留 UI 需要的字段：`kind` 用来区分视频流/音频流/封面等，
 /// `percent` 是单文件百分比（多 P 任务会逐个文件从 0 走到 100）。

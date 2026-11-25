@@ -146,7 +146,7 @@ struct AdvancedPane: View {
                 if let resetMessage {
                     Text(resetMessage).font(AppFont.hint).foregroundStyle(.secondary)
                 }
-                Text("会重置路径、轮询间隔、后端路由、bili-dl / Downie 参数与开关；不影响任务队列、视频文件和 links.txt。")
+                Text("会重置路径、轮询间隔、后端路由、liuying-engine / Downie 参数与开关；不影响任务队列、视频文件和 links.txt。")
                     .font(AppFont.hint)
                     .foregroundStyle(.secondary)
             }

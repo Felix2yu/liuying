@@ -8,7 +8,7 @@ public struct DownloadResult: Sendable {
     /// 后端原始输出（已截断），失败时用于诊断。
     public var logTail: [String]
     /// 是否真的确认了产出文件，从而允许把链接从 links.txt 删掉。
-    /// Downie 是异步入队、bili-dl 退出 0 但零产出都不能删——否则链接丢了就再也找不回来。
+    /// Downie 是异步入队、liuying-engine 退出 0 但零产出都不能删——否则链接丢了就再也找不回来。
     public var safeToPrune: Bool
     /// 已交给外部应用（Downie），完成与否只能由用户确认，任务进 .sent 而非 .done。
     public var handedOff: Bool
@@ -51,10 +51,10 @@ extension DownloadBackend {
     }
 }
 
-/// bili-dl 后端（内嵌 Go CLI，兼容 yutto argv）。参数构造在 `BiliDlArgs`（纯函数），
+/// liuying-engine 后端（内嵌 Go CLI，兼容 yutto argv）。参数构造在 `BiliDlArgs`（纯函数），
 /// 这里负责快照、执行、零产出判定与容器规整。
 public struct BiliDlBackend: DownloadBackend {
-    public let name = "bili-dl"
+    public let name = "liuying-engine"
     private let config: BiliDlConfig
     private let downloadDir: String
     private let timeout: TimeInterval
@@ -75,7 +75,7 @@ public struct BiliDlBackend: DownloadBackend {
         guard let binary = resolveBinary() else {
             return DownloadResult(
                 success: false,
-                errorMessage: "找不到 bili-dl 可执行文件：\(config.binary)。请确认 .app 内嵌完整，或在设置里指定绝对路径。"
+                errorMessage: "找不到 liuying-engine 可执行文件：\(config.binary)。请确认 .app 内嵌完整，或在设置里指定绝对路径。"
             )
         }
 
@@ -95,7 +95,7 @@ public struct BiliDlBackend: DownloadBackend {
             resultPath: resultPath,
             emitProgressJSON: true
         )
-        Log.info("bili-dl 开始下载：\(url)")
+        Log.info("liuying-engine 开始下载：\(url)")
         Log.debug("命令：\(args.joined(separator: " "))")
 
         let tail = LogTail()
@@ -104,7 +104,7 @@ public struct BiliDlBackend: DownloadBackend {
             arguments: Array(args.dropFirst()),
             environment: Subprocess.environment(),
             // CWD 设为 workDir：与 yutto 时代的约定保持一致（旧版会读 ./yutto.toml）；
-            // bili-dl 的产物一律落在 -d，不读 CWD 配置，但保留此约定便于排查。
+            // liuying-engine 的产物一律落在 -d，不读 CWD 配置，但保留此约定便于排查。
             currentDirectory: workDir,
             timeout: timeout,
             handle: handle,
@@ -128,7 +128,7 @@ public struct BiliDlBackend: DownloadBackend {
         if result.timedOut {
             return DownloadResult(
                 success: false,
-                errorMessage: "bili-dl 执行超时（\(Int(timeout))s）",
+                errorMessage: "liuying-engine 执行超时（\(Int(timeout))s）",
                 logTail: tail.snapshot
             )
         }
@@ -138,7 +138,7 @@ public struct BiliDlBackend: DownloadBackend {
         guard let report = BiliDlReport.load(path: resultPath) else {
             return DownloadResult(
                 success: false,
-                errorMessage: "bili-dl 没有产出 result.json（退出码 \(result.exitCode)）。"
+                errorMessage: "liuying-engine 没有产出 result.json（退出码 \(result.exitCode)）。"
                     + "引擎与客户端需要一起打包，请重新构建 .app。日志：\n"
                     + String(Self.humanReadable(result.stdout + result.stderr).suffix(600)),
                 logTail: tail.snapshot
@@ -209,11 +209,11 @@ public struct BiliDlBackend: DownloadBackend {
                 // 报告成功但清单为空，说明结果文件与产物不一致，宁可当失败重试也不要静默成功。
                 return DownloadResult(
                     success: false,
-                    errorMessage: "bili-dl 报告成功但产物清单为空，无法确认下载结果",
+                    errorMessage: "liuying-engine 报告成功但产物清单为空，无法确认下载结果",
                     logTail: tail
                 )
             }
-            Log.success("bili-dl 下载完成：\(outputs.count) 个文件")
+            Log.success("liuying-engine 下载完成：\(outputs.count) 个文件")
             return DownloadResult(success: true, outputs: outputs, logTail: tail, safeToPrune: true)
 
         case "canceled":
@@ -232,10 +232,10 @@ public struct BiliDlBackend: DownloadBackend {
         default: // failed / 未知状态
             let human = Self.humanReadable(stdout)
             let summary = report.failureSummary
-                ?? (human.isEmpty ? "下载失败（bili-dl 未给出原因）" : String(human.suffix(500)))
+                ?? (human.isEmpty ? "下载失败（liuying-engine 未给出原因）" : String(human.suffix(500)))
             return DownloadResult(
                 success: false,
-                errorMessage: "bili-dl 退出码 \(exitCode)：\(summary)",
+                errorMessage: "liuying-engine 退出码 \(exitCode)：\(summary)",
                 logTail: tail
             )
         }

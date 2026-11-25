@@ -11,7 +11,7 @@ struct SettingsView: View {
             PathsPane().environment(env)
                 .tabItem { Label("通用", systemImage: "gearshape") }
             BiliDlPane().environment(env)
-                .tabItem { Label("bili-dl", systemImage: "terminal") }
+                .tabItem { Label("liuying-engine", systemImage: "terminal") }
             DowniePane().environment(env)
                 .tabItem { Label("Downie", systemImage: "arrow.down.app") }
             AdvancedPane().environment(env)
@@ -111,7 +111,7 @@ struct PathsPane: View {
                     .font(AppFont.hint)
                     .foregroundStyle(.secondary)
                 Toggle("主窗口按 ⌘V 直接下载剪贴板里的链接", isOn: bind(env, \.pasteShortcut))
-                Text("只在主窗口是焦点窗口、没有弹层、且不在输入框里时生效；其它情况 ⌘V 仍是系统粘贴。支持分享文案里的 http(s) 链接，B 站走内嵌 bili-dl、其它按路由走 Downie。")
+                Text("只在主窗口是焦点窗口、没有弹层、且不在输入框里时生效；其它情况 ⌘V 仍是系统粘贴。支持分享文案里的 http(s) 链接，B 站走内嵌 liuying-engine、其它按路由走 Downie。")
                     .font(AppFont.hint)
                     .foregroundStyle(.secondary)
                 Toggle("登录时启动", isOn: Binding(
@@ -215,7 +215,7 @@ struct PathsPane: View {
     }
 }
 
-// MARK: - bili-dl
+// MARK: - liuying-engine
 
 struct BiliDlPane: View {
     @Environment(AppEnvironment.self) private var env
@@ -236,7 +236,7 @@ struct BiliDlPane: View {
                     title: "覆盖路径（可选）",
                     placeholder: "留用内嵌，或填绝对路径",
                     text: bind(env, \.biliDL.binary),
-                    browse: .file(message: "选择 bili-dl 可执行文件")
+                    browse: .file(message: "选择 liuying-engine 可执行文件")
                 )
                 let resolved = BundledTool.resolveBiliDl(configured: env.configStore.config.biliDL.binary)
                 Text(resolved.map { "实际使用：\($0)" } ?? "找不到这个可执行文件")
@@ -295,7 +295,7 @@ struct BiliDlPane: View {
                     title: "auth.toml",
                     placeholder: "auth.toml 路径（可含 ~）",
                     text: bind(env, \.biliDL.authFile),
-                    browse: .file(message: "选择 bili-dl 用的 auth.toml")
+                    browse: .file(message: "选择 liuying-engine 用的 auth.toml")
                 )
                 LabeledTextField(
                     title: "profile",
@@ -335,7 +335,7 @@ struct BiliDlPane: View {
                     title: "追加参数",
                     placeholder: "--proxy auto",
                     text: $extraArgsText,
-                    hint: "原样追加到 bili-dl 命令末尾",
+                    hint: "原样追加到 liuying-engine 命令末尾",
                     onSubmit: commitExtraArgs
                 )
                 StepperRow(
@@ -406,7 +406,7 @@ struct DowniePane: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                Text("B 站主机（b23.tv / bilibili.com / bilibili.tv）走第一个；其余 http(s) 链接走第二个 —— bili-dl 只认 B 站。后端在任务开始下载时按当前设置选择，排队中的任务改设置后会跟着换。")
+                Text("B 站主机（b23.tv / bilibili.com / bilibili.tv）走第一个；其余 http(s) 链接走第二个 —— liuying-engine 只认 B 站。后端在任务开始下载时按当前设置选择，排队中的任务改设置后会跟着换。")
                     .font(AppFont.hint)
                     .foregroundStyle(.secondary)
             }

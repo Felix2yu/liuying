@@ -541,7 +541,7 @@ public actor Engine {
                 Log.info("已交给 Downie，等待用户确认完成：\(display)")
             } else {
                 // 只有「确实来自 links.txt + 后端确认了产出文件」才删行。
-                // 手动/剪贴板/订阅任务的 URL 不在文件里；bili-dl 零产出也没证明下载成功。
+                // 手动/剪贴板/订阅任务的 URL 不在文件里；liuying-engine 零产出也没证明下载成功。
                 if task.source == .icloud, result.safeToPrune {
                     markPrune(task.rawURL, task.taskKey)
                 }

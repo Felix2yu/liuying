@@ -112,7 +112,7 @@ public enum URLExtractor {
         return douyinHosts.contains(host)
     }
 
-    /// 是否由内嵌引擎（bili-dl）处理。
+    /// 是否由内嵌引擎（liuying-engine）处理。
     ///
     /// 引擎与客户端同仓演进、一起打包，所以这里判断的是「能力」而非「兼容」：
     /// 引擎支持哪一类站点，这里就路由哪一类，其余仍交给 Downie。

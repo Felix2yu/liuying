@@ -1,6 +1,6 @@
 import Foundation
 
-/// 构造 bili-dl 的 argv。bili-dl 被改造成接受 yutto 的整套参数（未知参数静默忽略），
+/// 构造 liuying-engine 的 argv。liuying-engine 被改造成接受 yutto 的整套参数（未知参数静默忽略），
 /// 因此这里的顺序与旧版 yutto 的 build_args 保持一致，配置也复用同一语义。
 ///
 /// 纯函数：auth 文件是否存在由调用方注入，测试不需要碰文件系统。
@@ -31,13 +31,13 @@ public enum BiliDlArgs {
         }
 
         // 结构化结果。刻意用等号形式（--result-json=<path>）：单个 token，
-        // 老版本 bili-dl 不认识该 flag 时会整条忽略，不会把路径当成位置参数
+        // 老版本 liuying-engine 不认识该 flag 时会整条忽略，不会把路径当成位置参数
         // 当成第二个待下载 URL —— 这正是「旧内嵌二进制也能跑」的前提。
         if let resultPath, !resultPath.isEmpty {
             args.append("--result-json=\(resultPath)")
         }
 
-        // --tmp-dir 是 yutto 兼容参数；bili-dl 的宽松解析器接受但不改动产物落点。
+        // --tmp-dir 是 yutto 兼容参数；liuying-engine 的宽松解析器接受但不改动产物落点。
         // 保留以对齐 yutto argv 契约（产物位置以 --result-json 为准，不再靠目录差集）。
         if let workDir {
             args += ["--tmp-dir", workDir]

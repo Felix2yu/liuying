@@ -8,7 +8,7 @@ public struct EngineSnapshot: Sendable, Equatable {
     public var stats: [TaskState: Int] = [:]
     public var currentTaskID: Int64?
     public var currentText: String?
-    /// 当前下载的实时进度。由 bili-dl 的 NDJSON 事件驱动，为空表示未知（如 Downie）。
+    /// 当前下载的实时进度。由 liuying-engine 的 NDJSON 事件驱动，为空表示未知（如 Downie）。
     public var currentProgress: DownloadProgress?
     public var currentLog: [String] = []
     public var lastRoundAt: Date?

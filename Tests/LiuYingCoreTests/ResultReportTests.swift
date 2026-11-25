@@ -6,11 +6,11 @@ final class BiliDlResultContractsTests: XCTestCase {
     private let url = "https://www.bilibili.com/video/BV1GJ411x7h7"
 
     func testResultJSONUsesEqualsForm() {
-        // 必须用等号形式：单 token，老版本 bili-dl 不认识该 flag 时整条忽略，
+        // 必须用等号形式：单 token，老版本 liuying-engine 不认识该 flag 时整条忽略，
         // 不会把路径泄漏成第二个位置参数（否则会多下一个不存在的 URL）。
         let args = BiliDlArgs.build(
             config: BiliDlConfig(), url: url, downloadDir: "/d",
-            binaryPath: "bili-dl",
+            binaryPath: "liuying-engine",
             resultPath: "/support/work/task-7/result.json",
             emitProgressJSON: true
         )
@@ -22,7 +22,7 @@ final class BiliDlResultContractsTests: XCTestCase {
     }
 
     func testNoResultFlagsWhenNotRequested() {
-        let args = BiliDlArgs.build(config: BiliDlConfig(), url: url, downloadDir: "/d", binaryPath: "bili-dl")
+        let args = BiliDlArgs.build(config: BiliDlConfig(), url: url, downloadDir: "/d", binaryPath: "liuying-engine")
         XCTAssertFalse(args.contains("--progress-json"))
         XCTAssertFalse(args.contains { $0.hasPrefix("--result-json") })
     }
@@ -30,7 +30,7 @@ final class BiliDlResultContractsTests: XCTestCase {
     func testEmptyResultPathIsOmitted() {
         let args = BiliDlArgs.build(
             config: BiliDlConfig(), url: url, downloadDir: "/d",
-            binaryPath: "bili-dl", resultPath: ""
+            binaryPath: "liuying-engine", resultPath: ""
         )
         XCTAssertFalse(args.contains { $0.hasPrefix("--result-json") })
     }

@@ -160,7 +160,7 @@ final class PasteShortcutController {
 
     /// 主窗口里挂了 MainWindowTagView，优先查视图树；再用 navigationTitle 兜底，
     /// 防止 SwiftUI 把背景里的 representable 从视图树里挪走导致判定失效。
-    /// 设置窗口的标题是「通用 / bili-dl / Downie / 高级」，不会撞上这三个主窗口标题。
+    /// 设置窗口的标题是「通用 / liuying-engine / Downie / 高级」，不会撞上这三个主窗口标题。
     private static let mainWindowTitles: Set<String> = ["视频库", "队列", "订阅"]
 
     private static func isMainWindow(_ window: NSWindow?) -> Bool {

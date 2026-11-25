@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// B 站 WBI 签名。移植自 `bili-dl/api/wbi.go`（arc/search 实际用的就是这份）。
+/// B 站 WBI 签名。移植自 `liuying-engine/api/wbi.go`（arc/search 实际用的就是这份）。
 ///
 /// 三个 Swift 移植陷阱，改动前务必先看懂：
 ///  1. **必须手写 form-escape**。`URLComponents.queryItems` 的编码规则与 Go/Python 的

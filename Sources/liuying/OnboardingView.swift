@@ -66,7 +66,7 @@ struct OnboardingView: View {
 
                     row(
                         ok: BundledTool.resolveBiliDl(configured: config.biliDL.binary) != nil,
-                        title: "bili-dl（内嵌）",
+                        title: "liuying-engine（内嵌）",
                         detail: BundledTool.resolveBiliDl(configured: config.biliDL.binary) ?? "找不到内嵌二进制，请重装 .app 或到设置里指定路径"
                     ) {
                         EmptyView()
