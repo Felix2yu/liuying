@@ -1,3 +1,4 @@
+import AppKit
 import LiuYingCore
 import SwiftUI
 
@@ -23,53 +24,23 @@ struct SubscriptionScreen: View {
         }
     }
 
+    private var subtitle: String {
+        "\(filtered.count) 个 UP 主 · 自动追更新投稿"
+    }
+
     var body: some View {
-        List {
-            Section {
-                HStack(spacing: 8) {
-                    TextField("UP 主 UID（数字，例如 486906719）", text: $newMid)
-                        .modifier(FieldContainer())
-                        .frame(maxWidth: 280)
-                    Button(busy ? "添加中…" : "添加订阅") { add() }
-                        .disabled(busy || validMID == nil)
-                    if let message {
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(messageIsError ? Color.red : Color.secondary)
-                            .lineLimit(2)
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 4)
-                if !newMid.trimmingCharacters(in: .whitespaces).isEmpty, validMID == nil {
-                    Text("请填纯数字的正整数 UID；超长、含符号或负数都不会添加")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            } header: {
-                Text("首次同步只记录最新水位，不会把历史投稿全部下载 —— 需要时用「导入最近 N 条」。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            PageHeader(title: "订阅", subtitle: subtitle) {
+                InfoTipButton(
+                    title: "关于首次同步",
+                    text: "首次同步只记录最新水位，不会把历史投稿全部下载。需要补看时，展开订阅用「导入最近 5 条」。"
+                )
             }
 
-            Section {
-                if filtered.isEmpty {
-                    Text(subscriptions.isEmpty
-                         ? "还没有订阅。填一个 UP 主 UID 开始追更。"
-                         : "没有匹配的订阅。")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 24)
-                } else {
-                    ForEach(filtered) { subscription in
-                        row(subscription)
-                            .id("sub:\(subscription.id)")
-                    }
-                }
-            }
+            addCard
+            Divider()
+            mainList
         }
-        .listStyle(.inset)
         .task { await reload() }
         .onChange(of: state.selectedTab) { _, tab in
             if tab == .subscriptions { Task { await reload() } }
@@ -99,92 +70,206 @@ struct SubscriptionScreen: View {
         }
     }
 
+    // MARK: - 添加
+
+    private var addCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "person.badge.plus")
+                    .font(.system(size: 17))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
+
+                TextField("输入 UP 主 UID（纯数字，例如 486906719）", text: $newMid)
+                    .textFieldStyle(.plain)
+                    .font(AppFont.body)
+                    .onSubmit { add() }
+
+                Button(busy ? "添加中…" : "添加订阅") { add() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(busy || validMID == nil)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.separator, lineWidth: 0.75)
+            )
+
+            if !newMid.trimmingCharacters(in: .whitespaces).isEmpty, validMID == nil {
+                Text("请填纯数字的正整数 UID；超长、含符号或负数都不会添加")
+                    .font(AppFont.hint)
+                    .foregroundStyle(.red)
+            }
+
+            if let message {
+                Text(message)
+                    .font(AppFont.hint)
+                    .foregroundStyle(messageIsError ? Color.red : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, AppMetric.pagePadding)
+        .padding(.bottom, 14)
+    }
+
     private var validMID: Int64? {
         guard let mid = Int64(newMid.trimmingCharacters(in: .whitespaces)), mid > 0 else { return nil }
         return mid
     }
 
+    // MARK: - 列表
+
+    private var mainList: some View {
+        ScrollView {
+            LazyVStack(spacing: AppMetric.rowSpacing) {
+                if filtered.isEmpty {
+                    EmptyStateView(
+                        icon: "person.2",
+                        title: subscriptions.isEmpty ? "还没有订阅" : "没有匹配的订阅",
+                        message: subscriptions.isEmpty
+                            ? "填入 UP 主 UID，新投稿会自动加入下载队列。"
+                            : "换个关键词或清空搜索再看看。"
+                    )
+                } else {
+                    ForEach(filtered) { subscription in
+                        row(subscription)
+                            .id("sub:\(subscription.id)")
+                    }
+                }
+            }
+            .padding(.horizontal, AppMetric.pagePadding)
+            .padding(.vertical, 14)
+        }
+    }
+
     private func row(_ subscription: Subscription) -> some View {
         let expanded = expandedID == subscription.id
-        return VStack(alignment: .leading, spacing: 7) {
-            Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
-                    expandedID = expanded ? nil : subscription.id
-                }
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Circle()
-                        .fill(subscription.enabled ? Color.green : Color.secondary)
-                        .frame(width: 7, height: 7)
-                        .offset(y: -1)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(subscription.displayName).font(.callout)
-                        Text(metaLine(subscription))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+        return VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
+                        expandedID = expanded ? nil : subscription.id
                     }
-                    Spacer(minLength: 8)
-                    Toggle("启用 \(subscription.displayName)", isOn: Binding(
-                        get: { subscription.enabled },
-                        set: { enabled in
-                            Task {
-                                let error = await env.subscriptions?.setEnabled(
-                                    id: subscription.id, enabled: enabled
-                                )
-                                message = error
-                                messageIsError = error != nil
-                                await reload()
+                } label: {
+                    HStack(spacing: 12) {
+                        avatar(subscription)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(subscription.displayName)
+                                    .font(AppFont.rowTitle)
+                                    .lineLimit(1)
+                                if !subscription.enabled {
+                                    StatusPill(text: "已停用", color: .secondary)
+                                }
                             }
+                            Text(metaLine(subscription))
+                                .font(AppFont.rowMeta)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
-                    ))
-                    .labelsHidden()
-                    .accessibilityLabel(Text("启用 \(subscription.displayName)"))
-                    .accessibilityValue(Text(subscription.enabled ? "已启用" : "已停用"))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .disabled(busy)
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
+                        Spacer(minLength: 12)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 180 : 0))
+                            .accessibilityHidden(true)
+                    }
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityValue(Text(expanded ? "已展开" : "已折叠"))
+
+                Toggle("启用 \(subscription.displayName)", isOn: Binding(
+                    get: { subscription.enabled },
+                    set: { enabled in
+                        Task {
+                            let error = await env.subscriptions?.setEnabled(
+                                id: subscription.id, enabled: enabled
+                            )
+                            message = error
+                            messageIsError = error != nil
+                            await reload()
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .accessibilityLabel(Text("启用 \(subscription.displayName)"))
+                .accessibilityValue(Text(subscription.enabled ? "已启用" : "已停用"))
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .disabled(busy)
             }
-            .buttonStyle(.plain)
-            .accessibilityValue(Text(expanded ? "已展开" : "已折叠"))
 
             if expanded {
-                VStack(alignment: .leading, spacing: 6) {
+                Divider()
+                    .padding(.vertical, 10)
+                VStack(alignment: .leading, spacing: 10) {
                     if let reason = subscription.disabledReason, !reason.isEmpty {
-                        Text(reason).font(.caption).foregroundStyle(.red)
+                        Text(reason)
+                            .font(AppFont.hint)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    HStack(spacing: 6) {
-                        Button(busy ? "处理中…" : "立即刷新") { refresh(id: subscription.id) }
-                            .disabled(busy)
-                        Button("导入最近 5 条") { importRecent(id: subscription.id) }
-                            .disabled(busy || !subscription.initialSyncDone)
-                        Button("打开主页") {
+                    HStack(spacing: 8) {
+                        Button {
+                            refresh(id: subscription.id)
+                        } label: {
+                            Label(busy ? "处理中…" : "立即刷新", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(busy)
+
+                        Button {
+                            importRecent(id: subscription.id)
+                        } label: {
+                            Label("导入最近 5 条", systemImage: "square.and.arrow.down")
+                        }
+                        .disabled(busy || !subscription.initialSyncDone)
+
+                        Button {
                             NSWorkspace.shared.open(
                                 URL(string: "https://space.bilibili.com/\(subscription.mid)")!
                             )
+                        } label: {
+                            Label("打开主页", systemImage: "globe")
                         }
-                        Spacer()
-                        Button("删除订阅…", role: .destructive) { pendingDelete = subscription.id }
-                            .disabled(busy)
+
+                        Spacer(minLength: 8)
+
+                        Button(role: .destructive) {
+                            pendingDelete = subscription.id
+                        } label: {
+                            Label("删除订阅…", systemImage: "trash")
+                        }
+                        .disabled(busy)
                     }
-                    .controlSize(.small)
+                    .controlSize(.regular)
                 }
                 .transition(reduceMotion ? .identity : .opacity)
             }
         }
-        .padding(.vertical, 3)
+        .rowCard()
+    }
+
+    private func avatar(_ subscription: Subscription) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color.accentColor.opacity(0.12))
+                .frame(width: 42, height: 42)
+            Text(String(subscription.displayName.prefix(1)))
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+        }
+        .accessibilityHidden(true)
     }
 
     private func metaLine(_ subscription: Subscription) -> String {
         var parts = ["UID \(subscription.mid)"]
-        if let name = subscription.name { parts.append(name) }
         parts.append("已捕获 \(subscription.capturedCount)")
         if let polled = subscription.lastPolled {
             parts.append("上次 \(polled.formatted(date: .abbreviated, time: .shortened))")

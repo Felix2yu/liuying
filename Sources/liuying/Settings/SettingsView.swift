@@ -20,7 +20,7 @@ struct SettingsView: View {
         // 只声明下限：写死尺寸或给 ideal/max 会让 Settings scene 把窗口锁成固定大小而拖不动。
         // 默认尺寸、可缩放性与跨启动记忆由 Scene 的 defaultSize / windowResizability
         // 和 SettingsWindowSizing 一起负责。
-        .frame(minWidth: 560, minHeight: 420)
+        .frame(minWidth: 600, minHeight: 480)
         .background(SettingsWindowSizing())
     }
 }
@@ -73,7 +73,7 @@ struct PathsPane: View {
                 LabeledContent("iCloud 访问") {
                     HStack(spacing: 6) {
                         Text(accessStatus.displayText)
-                            .font(.caption)
+                            .font(AppFont.hint)
                             .foregroundStyle(accessStatus.isBlocking ? Color.red : Color.secondary)
                         Button("重新检测") { Task { await probe() } }
                         if accessStatus.isBlocking {
@@ -108,19 +108,19 @@ struct PathsPane: View {
                 Toggle("发送通知（新增、完成、失败、订阅异常）", isOn: bind(env, \.notify))
                 Toggle("监听剪贴板，复制任意 http(s) 链接自动入队", isOn: bind(env, \.clipboardMonitor))
                 Text("非 B 站链接会按下面的路由交给 Downie；这个开关会抓取剪贴板里的所有网址。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
                 Toggle("主窗口按 ⌘V 直接下载剪贴板里的链接", isOn: bind(env, \.pasteShortcut))
                 Text("只在主窗口是焦点窗口、没有弹层、且不在输入框里时生效；其它情况 ⌘V 仍是系统粘贴。支持分享文案里的 http(s) 链接，B 站走内嵌 bili-dl、其它按路由走 Downie。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
                 Toggle("登录时启动", isOn: Binding(
                     get: { env.loginItem.isEnabled },
                     set: { _ = env.loginItem.set($0) }
                 ))
-                Text(env.loginItem.statusText).font(.caption).foregroundStyle(.secondary)
+                Text(env.loginItem.statusText).font(AppFont.hint).foregroundStyle(.secondary)
                 if let loginError = env.loginItem.errorMessage {
-                    Text(loginError).font(.caption).foregroundStyle(.red)
+                    Text(loginError).font(AppFont.hint).foregroundStyle(.red)
                 }
                 Toggle("在 Dock 中显示\(AppIdentity.displayName)", isOn: Binding(
                     get: { DockVisibility.isEnabled },
@@ -133,7 +133,7 @@ struct PathsPane: View {
                     }
                 ))
                 Text("菜单栏图标可能被系统隐藏；开启后可从 Dock 和主菜单进入。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
             }
 
@@ -141,7 +141,7 @@ struct PathsPane: View {
                 LabeledContent("系统授权") {
                     HStack(spacing: 6) {
                         Text(Notifier.shared.state.displayText)
-                            .font(.caption)
+                            .font(AppFont.hint)
                             .foregroundStyle(
                                 Notifier.shared.state == .authorized ? Color.secondary : Color.orange
                             )
@@ -153,10 +153,10 @@ struct PathsPane: View {
                         }
                         Button("打开系统设置") { Notifier.shared.openNotificationSettings() }
                     }
-                    .controlSize(.small)
+                    .controlSize(.regular)
                 }
                 Text("通知开关只决定要不要发；系统侧关掉授权时这里也不会弹通知。改完系统设置后点「重新检测」。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
             }
         }
@@ -230,7 +230,7 @@ struct BiliDlPane: View {
                     bundled.map { "已内嵌：\($0)" } ?? "当前不是 .app 运行，未加载内嵌二进制",
                     systemImage: bundled == nil ? "exclamationmark.triangle" : "checkmark.circle"
                 )
-                .font(.caption)
+                .font(AppFont.hint)
                 .foregroundStyle(bundled == nil ? Color.orange : Color.secondary)
                 PathInputRow(
                     title: "覆盖路径（可选）",
@@ -240,7 +240,7 @@ struct BiliDlPane: View {
                 )
                 let resolved = BundledTool.resolveBiliDl(configured: env.configStore.config.biliDL.binary)
                 Text(resolved.map { "实际使用：\($0)" } ?? "找不到这个可执行文件")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(resolved == nil ? Color.red : Color.secondary)
             }
 
@@ -307,13 +307,13 @@ struct BiliDlPane: View {
                     exists ? "文件存在，会带上 --auth-file" : "文件不存在，将退化为未登录（最高 1080P）",
                     systemImage: exists ? "checkmark.circle" : "exclamationmark.triangle"
                 )
-                .font(.caption)
+                .font(AppFont.hint)
                 .foregroundStyle(exists ? Color.secondary : Color.red)
             }
 
             Section("容器规整") {
                 Text("下载后按视频编码 remux 到目标容器；无损音轨装不进 mp4/mov 时自动退回 mkv。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
                 ForEach(["av1", "hevc", "avc"], id: \.self) { codec in
                     LabeledPicker(
@@ -382,14 +382,14 @@ struct DowniePane: View {
         Form {
             Section("使用前必做（Downie 侧设置）") {
                 Text("`downie://` 只支持 url / postprocessing / destination / action / title 五个参数，**没有**「立刻开始下载」的参数。能不能自动开始，取决于下面的开关。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
                 Label("设置 → 高级 → 开启「自动化模式」：否则会弹质量/字幕对话框等待操作，下载不会自动开始", systemImage: "1.circle")
                 Label("在 Downie 内登录 B 站：它不共享浏览器登录态，未登录只能拿低画质", systemImage: "2.circle")
                 Label("设置 → 通用 → 勾选「Use MP4 container for AV1」", systemImage: "3.circle")
                 Label("设置 → 通用 → 质量选「分辨率上限」：选「每次询问」会每次弹格式框", systemImage: "4.circle")
                 Button("打开 Downie 去设置") { openDownie() }
-                    .controlSize(.small)
+                    .controlSize(.regular)
                     .disabled(DownieBackend.resolveAppPath(configured: env.configStore.config.downie.appName) == nil)
             }
 
@@ -407,7 +407,7 @@ struct DowniePane: View {
                 }
                 .pickerStyle(.segmented)
                 Text("B 站主机（b23.tv / bilibili.com / bilibili.tv）走第一个；其余 http(s) 链接走第二个 —— bili-dl 只认 B 站。后端在任务开始下载时按当前设置选择，排队中的任务改设置后会跟着换。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
             }
             Section("Downie") {

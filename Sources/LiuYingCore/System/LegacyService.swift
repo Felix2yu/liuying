@@ -19,15 +19,21 @@ public enum LegacyService {
         public var loaded: Bool
         public var pid: Int32?
         public var plistInstalled: Bool
+        /// 备份目录里还有停用时移走的 plist，「恢复旧服务」才可用。
+        public var backupAvailable: Bool
 
         public var displayText: String {
             if let pid, loaded { return "运行中（PID \(pid)）" }
             if loaded { return "已加载但未运行" }
             if plistInstalled { return "未加载（plist 仍在）" }
+            if backupAvailable { return "已停用（备份可恢复）" }
             return "未安装"
         }
 
         public var needsRetire: Bool { loaded || plistInstalled }
+
+        /// 设置页只在旧服务仍存在（可停用）或仍有备份（可恢复）时展示这一块。
+        public var needsAttention: Bool { needsRetire || backupAvailable }
     }
 
     public static func status() async -> Status {
@@ -47,13 +53,32 @@ public enum LegacyService {
             if let parsed = Int32(firstField) { pid = parsed }
         }
         let plistInstalled = FileManager.default.fileExists(atPath: plistPath)
+        let backupAvailable = hasDisabledBackup(in: disabledDirectory)
 
         // launchctl 说在跑不代表进程真的活着，用 kill(pid, 0) 复核。
         if let pid, loaded, kill(pid, 0) != 0 {
-            return Status(loaded: true, pid: nil, plistInstalled: plistInstalled)
+            return Status(
+                loaded: true,
+                pid: nil,
+                plistInstalled: plistInstalled,
+                backupAvailable: backupAvailable
+            )
         }
-        return Status(loaded: loaded, pid: pid, plistInstalled: plistInstalled)
+        return Status(
+            loaded: loaded,
+            pid: pid,
+            plistInstalled: plistInstalled,
+            backupAvailable: backupAvailable
+        )
     }
+
+    /// 备份文件名固定为 `<label>.plist.disabled-<时间戳>`，按前缀判断，避免把别的东西当成可恢复项。
+    static func hasDisabledBackup(in directory: String) -> Bool {
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
+        return entries.contains { $0.hasPrefix(disabledPrefix) }
+    }
+
+    private static var disabledPrefix: String { "\(label).plist.disabled-" }
 
     public struct RetireResult: Sendable {
         public var ok: Bool
@@ -96,7 +121,7 @@ public enum LegacyService {
                 let formatter = DateFormatter()
                 formatter.dateFormat = "yyyyMMdd-HHmmss"
                 let target = (disabledDirectory as NSString)
-                    .appendingPathComponent("\(label).plist.disabled-\(formatter.string(from: Date()))")
+                    .appendingPathComponent("\(disabledPrefix)\(formatter.string(from: Date()))")
                 try fm.moveItem(atPath: plistPath, toPath: target)
                 movedTo = target
                 notes.append("plist 已移到 \(target)")
@@ -132,7 +157,7 @@ public enum LegacyService {
             return RetireResult(ok: false, message: "plist 已经在了，无需恢复", movedPlistTo: nil)
         }
         guard let candidate = try? fm.contentsOfDirectory(atPath: disabledDirectory)
-            .filter({ $0.hasPrefix(label) })
+            .filter({ $0.hasPrefix(disabledPrefix) })
             .sorted()
             .last else {
             return RetireResult(ok: false, message: "找不到被移走的 plist", movedPlistTo: nil)

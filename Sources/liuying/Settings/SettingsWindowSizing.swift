@@ -25,8 +25,8 @@ struct SettingsWindowSizing: NSViewRepresentable {
         static let frameKey = "liuying.settingsWindowFrame"
         static let migratedKey = "liuying.settingsWindowFrameMigrated.v1"
         static let swiftUIFrameKey = "NSWindow Frame com_apple_SwiftUI_Settings_window"
-        static let defaultSize = NSSize(width: 620, height: 560)
-        static let minSize = NSSize(width: 560, height: 420)
+        static let defaultSize = NSSize(width: 680, height: 640)
+        static let minSize = NSSize(width: 600, height: 480)
         private static let maxSize = NSSize(width: 100_000, height: 100_000)
 
         private weak var window: NSWindow?

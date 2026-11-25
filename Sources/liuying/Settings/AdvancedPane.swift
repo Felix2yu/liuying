@@ -38,7 +38,7 @@ struct AdvancedPane: View {
                         NSWorkspace.shared.open(URL(fileURLWithPath: AppIdentity.backupsDirectory))
                     }
                 }
-                .controlSize(.small)
+                .controlSize(.regular)
             }
 
             Section("登录态") {
@@ -58,90 +58,96 @@ struct AdvancedPane: View {
                     resolved == nil ? "当前没有可用的 SESSDATA：订阅追更会被风控" : "已就绪（不显示内容）",
                     systemImage: resolved == nil ? "exclamationmark.triangle" : "checkmark.circle"
                 )
-                .font(.caption)
+                .font(AppFont.hint)
                 .foregroundStyle(resolved == nil ? Color.red : Color.secondary)
             }
 
-            Section("旧版 Python 服务") {
-                HStack(spacing: 8) {
-                    Text(legacyStatus?.displayText ?? "检查中…")
-                    Spacer()
-                    Button("重新检查") { Task { await refreshLegacy() } }
-                        .controlSize(.small)
-                }
+            if let legacyStatus, legacyStatus.needsAttention {
+                Section("旧版 Python 服务") {
+                    HStack(spacing: 8) {
+                        Text(legacyStatus.displayText)
+                        Spacer()
+                        Button("重新检查") { Task { await refreshLegacy() } }
+                            .controlSize(.regular)
+                    }
 
-                HStack(spacing: 8) {
-                    Button("停用旧服务…") { showRetireConfirm = true }
-                        .disabled(working || !(legacyStatus?.needsRetire ?? false))
-                    Button("恢复旧服务") { showRestoreConfirm = true }
-                        .disabled(working || legacyStatus?.plistInstalled ?? true)
-                }
-                .controlSize(.small)
+                    HStack(spacing: 8) {
+                        if legacyStatus.needsRetire {
+                            Button("停用旧服务…") { showRetireConfirm = true }
+                                .disabled(working)
+                        }
+                        if legacyStatus.backupAvailable, !legacyStatus.plistInstalled {
+                            Button("恢复旧服务") { showRestoreConfirm = true }
+                                .disabled(working)
+                        }
+                    }
+                    .controlSize(.regular)
 
-                if let legacyMessage {
-                    Text(legacyMessage).font(.caption).foregroundStyle(.secondary)
+                    if let legacyMessage {
+                        Text(legacyMessage).font(AppFont.hint).foregroundStyle(.secondary)
+                    }
+                    Text("停用 = 停止进程 + 把 LaunchAgent plist 移到备份目录（可恢复），不会再开机自启。")
+                        .font(AppFont.hint)
+                        .foregroundStyle(.secondary)
                 }
-                Text("停用 = 停止进程 + 把 LaunchAgent plist 移到备份目录（可恢复），不会再开机自启。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("链接文件清理") {
                 Text("下载成功后会自动把已消费的链接从 links.txt 里删掉。这里是一次性清理：用旧版已完成记录清一遍，其余行逐字节保持不变。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
                     Button(pruning ? "处理中…" : "预览并清理…") { preparePrune() }
-                        .controlSize(.small)
+                        .controlSize(.regular)
                         .disabled(pruning)
                     if pruning {
-                        ProgressView().controlSize(.small)
+                        ProgressView().controlSize(.regular)
                     }
                 }
                 if let pruneMessage {
-                    Text(pruneMessage).font(.caption).foregroundStyle(.secondary)
+                    Text(pruneMessage).font(AppFont.hint).foregroundStyle(.secondary)
                 }
             }
 
             Section("跨设备去重同步") {
                 Toggle("换机时避免重复下载已下过的视频", isOn: bind(env, \.dedupSync))
                 Text("开启后，已入队链接的去重键会写进 links.txt 同目录的清单，随 iCloud 同步；新机启动先导入清单，再把 links.txt 里的剩余链接入队，因此不会把旧视频全部重下一遍。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
                     Button(syncing ? "处理中…" : "从清单导入") { runSync(export: false) }
-                        .controlSize(.small)
+                        .controlSize(.regular)
                         .disabled(syncing)
                     Button(syncing ? "处理中…" : "导出到清单") { runSync(export: true) }
-                        .controlSize(.small)
+                        .controlSize(.regular)
                         .disabled(syncing)
-                    if syncing { ProgressView().controlSize(.small) }
+                    if syncing { ProgressView().controlSize(.regular) }
                 }
                 if let syncInfo {
                     Text("清单：\(syncInfo.path)")
-                        .font(.caption)
+                        .font(AppFont.hint)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                     Text("已导入 \(syncInfo.synced) 个键 · 本机去重键共 \(syncInfo.known) 个")
-                        .font(.caption)
+                        .font(AppFont.hint)
                         .foregroundStyle(.secondary)
                 }
                 if let syncMessage {
-                    Text(syncMessage).font(.caption).foregroundStyle(.secondary)
+                    Text(syncMessage).font(AppFont.hint).foregroundStyle(.secondary)
                 }
                 Text("清单只含去重键，不含视频文件；两台 Mac 同时写入会取并集，不会互相覆盖。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
             }
 
             Section("配置") {
                 Button("恢复默认设置…", role: .destructive) { showResetConfirm = true }
-                    .controlSize(.small)
+                    .controlSize(.regular)
                 if let resetMessage {
-                    Text(resetMessage).font(.caption).foregroundStyle(.secondary)
+                    Text(resetMessage).font(AppFont.hint).foregroundStyle(.secondary)
                 }
                 Text("会重置路径、轮询间隔、后端路由、bili-dl / Downie 参数与开关；不影响任务队列、视频文件和 links.txt。")
-                    .font(.caption)
+                    .font(AppFont.hint)
                     .foregroundStyle(.secondary)
             }
         }

@@ -115,11 +115,16 @@ public actor LibraryScanner {
     }
 }
 
-/// 缩略图：只在行展开时按需生成，缓存到 AppSupport/thumbs。
+/// 缩略图：按需生成，缓存到 AppSupport/thumbs。
 ///
 /// 不用 AVAssetImageGenerator —— AV1-in-mkv 它解不出来，ffmpeg 可以。
 public actor Thumbnailer {
     private var inFlight: [String: Task<String?, Never>] = [:]
+
+    /// 视频库行内常显缩略图后，一屏可能同时请求十几张。
+    /// 不限制会瞬间起十几个 ffmpeg 解码进程，4K 素材能把 CPU 打满、列表反而更慢。
+    /// 两个并发足够喂饱 UI，又不会让风扇起飞。
+    private static let gate = ConcurrencyGate(limit: 2)
 
     public init() {}
 
@@ -130,6 +135,11 @@ public actor Thumbnailer {
         if let existing = inFlight[path] { return await existing.value }
 
         let task = Task<String?, Never> { [target, path, maxWidth] in
+            // 排队期间可能已被别的请求生成（缓存跨进程持久化）。
+            if FileManager.default.fileExists(atPath: target) { return target }
+            await Self.gate.acquire()
+            defer { Task { await Self.gate.release() } }
+            if FileManager.default.fileExists(atPath: target) { return target }
             guard let ffmpeg = Subprocess.lookupOnPATH("ffmpeg") else { return nil }
             try? FileManager.default.createDirectory(
                 atPath: AppIdentity.thumbnailsDirectory, withIntermediateDirectories: true
@@ -163,5 +173,33 @@ public actor Thumbnailer {
             .flatMap { $0 }?.timeIntervalSince1970 ?? 0
         let digest = Insecure.MD5.hash(data: Data("\(path)|\(stamp)".utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// 轻量异步并发闸门。release 时若有等待者，直接把名额转交，避免计数竞争。
+private actor ConcurrencyGate {
+    private let limit: Int
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.resume()
+        } else {
+            active -= 1
+        }
     }
 }

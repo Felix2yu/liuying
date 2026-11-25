@@ -20,15 +20,15 @@ struct OnboardingView: View {
     private var config: AppConfig { env.configStore.config }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             Text("欢迎使用\(AppIdentity.displayName)")
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 26, weight: .bold))
             Text("把 iPhone 分享的 B 站链接变成下载好的视频。先确认几件事。")
-                .font(.callout)
+                .font(AppFont.body)
                 .foregroundStyle(.secondary)
 
             GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     row(
                         ok: !accessStatus.isBlocking,
                         title: "iCloud 链接文件",
@@ -36,8 +36,9 @@ struct OnboardingView: View {
                     ) {
                         if accessStatus.isBlocking {
                             Button("打开系统设置") { PermissionProbe.openFullDiskAccessSettings() }
-                                .controlSize(.small)
-                            Button("重新检测") { Task { await probe() } }.controlSize(.small)
+                                .controlSize(.regular)
+                            Button("重新检测") { Task { await probe() } }
+                                .controlSize(.regular)
                         }
                     }
 
@@ -58,7 +59,7 @@ struct OnboardingView: View {
                                 env.configStore.update { $0.downloadDir = url.path }
                             }
                         }
-                        .controlSize(.small)
+                        .controlSize(.regular)
                     }
 
                     Divider()
@@ -83,26 +84,31 @@ struct OnboardingView: View {
                         EmptyView()
                     }
                 }
-                .padding(8)
+                .padding(10)
             }
 
             if let legacyStatus, legacyStatus.needsRetire {
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Toggle("停用旧版 Python bili-watcher 服务", isOn: $retireLegacy)
+                            .font(.system(size: 13.5))
                         Text("当前状态：\(legacyStatus.displayText)。停用会终止进程并把 LaunchAgent plist 移到备份目录（可恢复）。")
-                            .font(.caption)
+                            .font(AppFont.hint)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .padding(8)
+                    .padding(10)
                 }
             }
 
             Toggle("登录时自动启动\(AppIdentity.displayName)", isOn: $enableLogin)
-                .font(.callout)
+                .font(.system(size: 13.5))
 
             if let summary {
-                Text(summary).font(.caption).foregroundStyle(.secondary)
+                Text(summary)
+                    .font(AppFont.hint)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
@@ -113,11 +119,14 @@ struct OnboardingView: View {
                     start()
                 }
                 .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
                 .disabled(working || legacyStatus == nil)
             }
+            .controlSize(.large)
+            .padding(.top, 2)
         }
-        .padding(20)
-        .frame(minWidth: 480, idealWidth: 560)
+        .padding(24)
+        .frame(minWidth: 540, idealWidth: 620)
         .task {
             await probe()
             legacyStatus = await LegacyService.status()
@@ -128,13 +137,18 @@ struct OnboardingView: View {
         ok: Bool, title: String, detail: String,
         @ViewBuilder actions: () -> some View
     ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 15))
                 .foregroundStyle(ok ? Color.green : Color.orange)
                 .accessibilityLabel(Text(ok ? "已就绪" : "需要处理"))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout)
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 14, weight: .medium))
+                Text(detail)
+                    .font(AppFont.hint)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
             Spacer()
             actions()

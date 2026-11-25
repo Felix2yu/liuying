@@ -37,32 +37,9 @@ struct AdaptiveTint<S: Shape>: ViewModifier {
     }
 }
 
-/// 筛选 chip 的统一外观：选中用 accent 状态色，未选中用动态控件背景色，
-/// 不再把 .secondary（前景语义色）当背景色用。
-struct ChipBackground: ViewModifier {
-    let selected: Bool
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.colorSchemeContrast) private var contrast
-
-    func body(content: Content) -> some View {
-        content
-            .background(
-                Capsule().fill(selected
-                    ? Color.accentColor.opacity(
-                        AdaptiveAppearance.tintOpacity(scheme: scheme, contrast: contrast))
-                    : Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(Capsule().strokeBorder(selected ? Color.accentColor : .clear))
-    }
-}
-
 extension View {
     func adaptiveTint<S: Shape>(_ tint: Color, in shape: S) -> some View {
         modifier(AdaptiveTint(tint: tint, shape: shape))
-    }
-
-    func chipBackground(selected: Bool) -> some View {
-        modifier(ChipBackground(selected: selected))
     }
 }
 
@@ -74,8 +51,9 @@ struct FieldContainer: ViewModifier {
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .font(AppFont.body)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(.quaternary)
@@ -84,7 +62,7 @@ struct FieldContainer: ViewModifier {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(.separator, lineWidth: 0.5)
             )
-            .frame(minHeight: 30)
+            .frame(minHeight: 32)
     }
 }
 
@@ -100,14 +78,13 @@ struct LabeledTextField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.subheadline.weight(.medium))
+                .font(.system(size: 13.5, weight: .medium))
             TextField(placeholder, text: $text)
                 .modifier(FieldContainer())
                 .onSubmit { onSubmit?() }
             if let hint {
                 Text(hint)
-                    .font(.caption)
-                    .foregroundStyle(hintColor)
+                    .settingsHint(hintColor)
             }
         }
     }
@@ -124,13 +101,12 @@ struct LabeledSecureField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.subheadline.weight(.medium))
+                .font(.system(size: 13.5, weight: .medium))
             SecureField(placeholder, text: $text)
                 .modifier(FieldContainer())
             if let hint {
                 Text(hint)
-                    .font(.caption)
-                    .foregroundStyle(hintColor)
+                    .settingsHint(hintColor)
             }
         }
     }
@@ -154,7 +130,7 @@ struct LabeledPicker<T: Hashable>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.subheadline.weight(.medium))
+                .font(.system(size: 13.5, weight: .medium))
             Menu {
                 ForEach(options) { opt in
                     Button {
@@ -175,7 +151,7 @@ struct LabeledPicker<T: Hashable>: View {
                         .lineLimit(1)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.down")
-                        .font(.caption.weight(.semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.tertiary)
                         .accessibilityHidden(true)
                 }
@@ -188,8 +164,7 @@ struct LabeledPicker<T: Hashable>: View {
             .accessibilityValue(Text(currentLabel))
             if let hint {
                 Text(hint)
-                    .font(.caption)
-                    .foregroundStyle(hintColor)
+                    .settingsHint(hintColor)
             }
         }
     }
@@ -219,20 +194,19 @@ struct PathInputRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.subheadline.weight(.medium))
+                .font(.system(size: 13.5, weight: .medium))
             HStack(spacing: 8) {
                 TextField(placeholder, text: $text)
                     .modifier(FieldContainer())
                 browseButton
                 if showAutoDiscover {
                     Button("自动发现") { autoDiscover?() }
-                        .controlSize(.small)
+                        .controlSize(.regular)
                 }
             }
             if let hint {
                 Text(hint)
-                    .font(.caption)
-                    .foregroundStyle(hintColor)
+                    .settingsHint(hintColor)
             }
         }
     }
@@ -240,6 +214,7 @@ struct PathInputRow: View {
     private var browseButton: some View {
         Button(action: runBrowse) {
             Image(systemName: "folder")
+                .font(.system(size: 14))
         }
         .controlSize(.regular)
         .help("选择…")
@@ -278,7 +253,10 @@ struct StepperRow: View {
         LabeledContent(title) {
             Stepper(value: $value, in: range, step: step) {
                 Text(display(value))
+                    .font(AppFont.hint)
+                    .monospacedDigit()
             }
         }
+        .font(.system(size: 13.5))
     }
 }

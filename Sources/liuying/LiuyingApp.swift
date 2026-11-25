@@ -23,7 +23,7 @@ struct LiuyingApp: App {
                 .environment(env)
                 .task { await env.bootstrap() }
         }
-        .defaultSize(width: 960, height: 640)
+        .defaultSize(width: 1120, height: 760)
         .windowResizability(.contentMinSize)
         .commands {
             // 本 App 不创建文档：把 File > New（⌘N）让给「添加链接…」。
@@ -56,7 +56,7 @@ struct LiuyingApp: App {
             SettingsView()
                 .environment(env)
         }
-        .defaultSize(width: 620, height: 560)
+        .defaultSize(width: 680, height: 640)
         .windowResizability(.contentMinSize)
     }
 }

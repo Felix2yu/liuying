@@ -2,7 +2,7 @@ import AppKit
 import LiuYingCore
 import SwiftUI
 
-/// 队列：紧凑列表 + 行内展开日志与操作。
+/// 队列：卡片列表 + 行内展开日志与操作。
 struct QueueScreen: View {
     @Environment(AppEnvironment.self) private var env
     @State private var state = MainWindowState.shared
@@ -13,8 +13,33 @@ struct QueueScreen: View {
 
     private var snapshot: EngineSnapshot { env.model.snapshot }
 
+    /// 顶部计数必须用全库统计。`snapshot.recent` 只是当前分页窗口，
+    /// 拿它计数会把「总数」错误地显示成分页大小（默认 30）。
+    private var totalTaskCount: Int {
+        max(snapshot.stats.values.reduce(0, +), snapshot.recent.count)
+    }
+
+    private func totalCount(for state: TaskState) -> Int {
+        let loaded = snapshot.recent.lazy.filter { $0.state == state }.count
+        return max(snapshot.stats[state] ?? 0, loaded)
+    }
+
+    private var trimmedKeyword: String {
+        state.searchText.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// 当前筛选下，全库还有多少条没装进已加载窗口。
+    /// 搜索词无法在本地对全库计数，所以有关键词时这个数只代表状态维度。
+    private var unloadedCount: Int {
+        let total = stateFilter.map { totalCount(for: $0) } ?? totalTaskCount
+        let loaded = snapshot.recent.lazy.filter { task in
+            stateFilter == nil || task.state == stateFilter
+        }.count
+        return max(0, total - loaded)
+    }
+
     private var filtered: [DownloadTask] {
-        let keyword = state.searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        let keyword = trimmedKeyword.lowercased()
         return snapshot.recent.filter { task in
             if let stateFilter, task.state != stateFilter { return false }
             guard !keyword.isEmpty else { return true }
@@ -24,53 +49,30 @@ struct QueueScreen: View {
     }
 
     var body: some View {
-        List {
-            Section {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        chip("全部", selected: stateFilter == nil, count: snapshot.recent.count) {
-                            stateFilter = nil
-                        }
-                        ForEach(TaskState.allCases, id: \.self) { state in
-                            chip(
-                                state.displayName,
-                                selected: stateFilter == state,
-                                count: snapshot.recent.filter { $0.state == state }.count
-                            ) { stateFilter = state }
-                        }
-                    }
-                    .padding(.vertical, 2)
+        VStack(spacing: 0) {
+            PageHeader(title: "下载队列", subtitle: snapshot.statusLine) {
+                Button {
+                    togglePause()
+                } label: {
+                    Label(
+                        snapshot.isPaused ? "继续" : "暂停",
+                        systemImage: snapshot.isPaused ? "play.fill" : "pause.fill"
+                    )
                 }
-                .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                .disabled(env.engine == nil)
+
+                Button {
+                    Task { await env.engine?.tickNow() }
+                } label: {
+                    Label("立即检查", systemImage: "arrow.clockwise")
+                }
+                .disabled(env.engine == nil)
             }
 
-            Section {
-                if filtered.isEmpty {
-                    Text("队列是空的。从 iPhone 分享链接，或在菜单里「添加链接…」。")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 24)
-                } else {
-                    ForEach(filtered) { task in
-                        row(task)
-                            .id("task:\(task.id)")
-                    }
-                }
-            } header: {
-                Text(snapshot.statusLine).font(.caption).foregroundStyle(.secondary)
-            }
-
-            if snapshot.recentTruncated {
-                Section {
-                    Button("加载更多历史（当前 \(snapshot.recentLimit) 条）") {
-                        Task { await env.engine?.showMoreHistory() }
-                    }
-                    .controlSize(.small)
-                }
-            }
+            filterBar
+            Divider()
+            mainList
         }
-        .listStyle(.inset)
         // 展开当前下载中的任务时，每秒刷新一次快照以显示实时日志。
         .task(id: expandedID) {
             guard expandedID != nil else { return }
@@ -102,51 +104,157 @@ struct QueueScreen: View {
         }
     }
 
-    private func chip(_ title: String, selected: Bool, count: Int, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text("\(title) \(count)")
-                .font(.caption)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .frame(minHeight: 20)
-                .chipBackground(selected: selected)
+    private func togglePause() {
+        Task {
+            if snapshot.isPaused {
+                await env.engine?.resume()
+            } else {
+                await env.engine?.pause()
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    // MARK: - 列表
+
+    private var filterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                FilterChip("全部", count: totalTaskCount, selected: stateFilter == nil) {
+                    stateFilter = nil
+                }
+                ForEach(TaskState.allCases, id: \.self) { state in
+                    FilterChip(
+                        state.displayName,
+                        count: totalCount(for: state),
+                        selected: stateFilter == state
+                    ) {
+                        stateFilter = state
+                    }
+                }
+            }
+            .padding(.horizontal, AppMetric.pagePadding)
+            .padding(.bottom, 12)
+        }
+    }
+
+    private var mainList: some View {
+        ScrollView {
+            LazyVStack(spacing: AppMetric.rowSpacing) {
+                if filtered.isEmpty {
+                    emptyContent
+                } else {
+                    ForEach(filtered) { task in
+                        row(task)
+                            .id("task:\(task.id)")
+                    }
+                }
+
+                if snapshot.recentTruncated {
+                    historyFooter
+                }
+            }
+            .padding(.horizontal, AppMetric.pagePadding)
+            .padding(.vertical, 14)
+        }
+    }
+
+    @ViewBuilder
+    private var emptyContent: some View {
+        EmptyStateView(
+            icon: stateFilter == nil && trimmedKeyword.isEmpty
+                ? "tray"
+                : "line.3.horizontal.decrease.circle",
+            title: stateFilter == nil && trimmedKeyword.isEmpty ? "队列是空的" : "没有匹配的任务",
+            message: emptyMessage
+        ) {
+            if stateFilter == nil && trimmedKeyword.isEmpty {
+                Button("添加链接…", systemImage: "plus") {
+                    state.showAddLink = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private var emptyMessage: String {
+        if stateFilter == nil && trimmedKeyword.isEmpty {
+            return "从 iPhone 分享链接，或在菜单栏里添加链接。"
+        }
+        var parts = ["已加载的最近 \(snapshot.recent.count) 条里没有匹配的任务。"]
+        if unloadedCount > 0 && snapshot.recentTruncated {
+            parts.append("更早的记录里还有 \(unloadedCount) 条，点下方「加载更多历史」继续找。")
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    private var historyFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            HStack(spacing: 10) {
+                Button {
+                    Task { await env.engine?.showMoreHistory() }
+                } label: {
+                    Label("加载更多历史", systemImage: "clock.arrow.circlepath")
+                }
+                .controlSize(.regular)
+                Text("已加载 \(snapshot.recent.count) / 共 \(totalTaskCount) 条")
+                    .font(AppFont.hint)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            if stateFilter != nil && unloadedCount > 0 {
+                InfoNote(text: "当前筛选还有 \(unloadedCount) 条更早的记录未加载。")
+            } else if !trimmedKeyword.isEmpty {
+                InfoNote(text: "更早的记录尚未加载，可能还有匹配项。")
+            }
+        }
+        .padding(.top, 6)
     }
 
     private func row(_ task: DownloadTask) -> some View {
         let expanded = expandedID == task.id
-        return VStack(alignment: .leading, spacing: 7) {
+        return VStack(spacing: 0) {
             Button {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
                     expandedID = expanded ? nil : task.id
                 }
             } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Circle()
-                        .fill(color(for: task.state))
-                        .frame(width: 7, height: 7)
-                        .offset(y: -1)
-                    VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(task.state.tint.opacity(0.14))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: task.state.symbol)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(task.state.tint)
+                    }
+                    .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(task.displayTitle)
-                            .font(.callout)
+                            .font(AppFont.rowTitle)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
+                            .foregroundStyle(.primary)
                         Text(metaLine(task))
-                            .font(.caption)
+                            .font(AppFont.rowMeta)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    Spacer(minLength: 8)
-                    Text(task.source.displayName)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
+
+                    Spacer(minLength: 12)
+
+                    if task.state == .downloading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel(Text("正在下载"))
+                    }
+                    StatusPill(text: task.state.displayName, color: task.state.tint)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
                         .accessibilityHidden(true)
                 }
                 .contentShape(Rectangle())
@@ -155,44 +263,53 @@ struct QueueScreen: View {
             .accessibilityValue(Text(expanded ? "已展开" : "已折叠"))
 
             if expanded {
-                detail(task).transition(reduceMotion ? .identity : .opacity)
+                Divider()
+                    .padding(.vertical, 10)
+                detail(task)
+                    .transition(reduceMotion ? .identity : .opacity)
             }
         }
-        .padding(.vertical, 3)
+        .rowCard()
     }
 
     private func detail(_ task: DownloadTask) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(task.rawURL)
-                .font(.caption.monospaced())
+                .font(AppFont.mono)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .lineLimit(2)
                 .truncationMode(.middle)
 
+            if task.state == .sent {
+                InfoNote(text: "进度请在 Downie 里查看；文件下好后回到这里点「已下载，标记完成」。")
+            }
+
             if let error = task.error, !error.isEmpty {
                 Text(error)
-                    .font(.caption.monospaced())
+                    .font(AppFont.monoStrong)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .adaptiveTint(.red, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .padding(10)
+                    .adaptiveTint(.red, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
 
             ForEach(task.outputs) { output in
-                HStack(spacing: 6) {
-                    Image(systemName: "film").font(.caption2).foregroundStyle(.tertiary)
+                HStack(spacing: 8) {
+                    Image(systemName: "film")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
                     Text(output.path)
-                        .font(.caption.monospaced())
+                        .font(AppFont.mono)
                         .textSelection(.enabled)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Spacer()
+                    Spacer(minLength: 8)
                     Button("显示") {
                         NSWorkspace.shared.selectFile(output.path, inFileViewerRootedAtPath: "")
                     }
-                    .controlSize(.small)
+                    .controlSize(.regular)
                 }
             }
 
@@ -200,71 +317,76 @@ struct QueueScreen: View {
                 logView
             }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if task.state == .sent {
-                    Button("已下载，标记完成") {
+                    Button {
                         Task { await env.engine?.confirm(taskID: task.id) }
+                    } label: {
+                        Label("已下载，标记完成", systemImage: "checkmark.circle")
                     }
+                    .buttonStyle(.borderedProminent)
                 }
                 if task.state == .failed || task.state == .done
                     || task.state == .cancelled || task.state == .sent {
-                    Button("重新下载") {
+                    Button {
                         Task { await env.engine?.retry(taskID: task.id) }
+                    } label: {
+                        Label("重新下载", systemImage: "arrow.clockwise")
                     }
                 }
                 if task.state == .downloading {
-                    Button("取消当前") {
+                    Button {
                         Task { await env.engine?.cancelCurrentDownload() }
+                    } label: {
+                        Label("取消当前", systemImage: "stop.fill")
                     }
                 }
-                Button("复制链接") {
+                Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(task.rawURL, forType: .string)
+                } label: {
+                    Label("复制链接", systemImage: "doc.on.doc")
                 }
-                Spacer()
-                Button("移除…", role: .destructive) { pendingRemoval = task.id }
-                    .disabled(task.state == .downloading)
+                Spacer(minLength: 8)
+                Button(role: .destructive) {
+                    pendingRemoval = task.id
+                } label: {
+                    Label("移除…", systemImage: "trash")
+                }
+                .disabled(task.state == .downloading)
             }
-            .controlSize(.small)
+            .controlSize(.regular)
         }
-        .padding(.top, 2)
     }
 
     private var logView: some View {
-        ScrollView {
-            Text(snapshot.currentLog.suffix(120).joined(separator: "\n"))
-                .font(.caption2.monospaced())
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("实时日志")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+            ScrollView {
+                Text(snapshot.currentLog.suffix(120).joined(separator: "\n"))
+                    .font(AppFont.mono)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .frame(maxHeight: 200)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
         }
-        .frame(maxHeight: 160)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
     }
 
     private func metaLine(_ task: DownloadTask) -> String {
-        var parts = [task.state.displayName]
+        var parts: [String] = []
+        if let owner = task.ownerName { parts.append(owner) }
         if task.attempts > 1 { parts.append("第 \(task.attempts) 次") }
         if let next = task.nextRetryAt, next > Date() {
-            parts.append("\(next.formatted(date: .abbreviated, time: .shortened)) 后重试")
+            parts.append("\(next.formatted(date: .omitted, time: .shortened)) 后重试")
         }
-        if task.state == .sent { parts.append("进度请在 Downie 里查看") }
-        if let owner = task.ownerName { parts.append(owner) }
+        parts.append(task.source.displayName)
         parts.append(task.updatedAt.formatted(date: .abbreviated, time: .shortened))
         return parts.joined(separator: " · ")
     }
-
-    private func color(for state: TaskState) -> Color {
-        switch state {
-        case .pending: .secondary
-        case .downloading: .accentColor
-        case .done: .green
-        case .failed: .red
-        case .cancelled: .secondary
-        case .sent: .orange
-        }
-    }
-
 }
 
 /// 手动添加链接。
@@ -279,44 +401,56 @@ struct AddLinkSheet: View {
     @State private var finished = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("添加链接").font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("添加链接")
+                .font(.title2.weight(.semibold))
             Text("粘贴分享文案、BV 号链接或 b23.tv 短链，一行一条。也可以直接把链接拖进来。")
-                .font(.caption)
+                .font(AppFont.body)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             TextEditor(text: $text)
-                .font(.callout.monospaced())
-                .frame(minHeight: 140)
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+                .font(.system(size: 14, design: .monospaced))
+                .frame(minHeight: 180)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(.separator, lineWidth: 0.5)
+                )
                 .dropDestination(for: String.self) { items, _ in
                     text += (text.isEmpty ? "" : "\n") + items.joined(separator: "\n")
                     return true
                 }
 
             if let message {
-                Text(message).font(.caption).foregroundStyle(.secondary)
+                Text(message)
+                    .font(AppFont.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack {
+            HStack(spacing: 10) {
                 if finished {
                     Button("撤销本次添加") { undo() }
                         .disabled(busy)
                     Spacer()
                     Button("完成") { dismiss() }
                         .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
                 } else {
                     Spacer()
                     Button("取消") { dismiss() }
                     Button(busy ? "添加中…" : "添加到队列") { add() }
                         .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
                         .disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            .controlSize(.large)
         }
-        .padding(18)
-        .frame(minWidth: 420, idealWidth: 520)
+        .padding(22)
+        .frame(minWidth: 520, idealWidth: 620)
     }
 
     private func add() {

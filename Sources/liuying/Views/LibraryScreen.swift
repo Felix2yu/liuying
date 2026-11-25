@@ -2,7 +2,7 @@ import AppKit
 import LiuYingCore
 import SwiftUI
 
-/// 视频库：紧凑列表，选中行就地展开详情。
+/// 视频库：大缩略图卡片列表，选中行就地展开详情。
 struct LibraryScreen: View {
     @Environment(AppEnvironment.self) private var env
     @State private var state = MainWindowState.shared
@@ -11,6 +11,9 @@ struct LibraryScreen: View {
     @State private var videos: [LibraryVideo] = []
     @State private var expandedID: String?
     @State private var ownerFilter: String?
+    @State private var showOwnerPicker = false
+    @State private var ownerQuery = ""
+    @FocusState private var ownerSearchFocused: Bool
     @State private var focusID: String?
     @State private var scanner = LibraryScanner()
     @State private var isLoading = false
@@ -19,10 +22,6 @@ struct LibraryScreen: View {
     @State private var actionError: String?
 
     private var downloadDir: String { env.configStore.resolvedDownloadDir }
-
-    private var owners: [String] {
-        Array(Set(videos.compactMap(\.owner))).sorted()
-    }
 
     private var filtered: [LibraryVideo] {
         let keyword = state.searchText.trimmingCharacters(in: .whitespaces).lowercased()
@@ -34,56 +33,36 @@ struct LibraryScreen: View {
         }
     }
 
-    private var totalBytes: Int64 { videos.reduce(0) { $0 + $1.bytes } }
+    private var filteredBytes: Int64 { filtered.reduce(0) { $0 + $1.bytes } }
 
-    /// 列表单独抽出：body 上挂了多个 onChange + alert，整个表达式会让 Swift 类型检查超时。
-    private var mainList: some View {
-        ScrollViewReader { proxy in
-            List {
-                if let actionError {
-                    errorBanner(actionError)
-                }
-                Section {
-                    filterChips
-                }
-                Section {
-                    if filtered.isEmpty {
-                        emptyState
-                    } else {
-                        ForEach(filtered) { video in
-                            row(video)
-                                .id("video:\(video.path)")
-                        }
-                    }
-                } header: {
-                    Text("\(filtered.count) 个视频 · \(Self.sizeText(totalBytes))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .listStyle(.inset)
-            .onChange(of: focusID) { _, newValue in
-                guard let newValue else { return }
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                    proxy.scrollTo("video:\(newValue)", anchor: .center)
-                }
-            }
-        }
-    }
-
-    private func errorBanner(_ text: String) -> some View {
-        Section {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(text).font(.caption)
-                Spacer()
-                Button("关闭") { actionError = nil }.controlSize(.small)
-            }
-        }
+    private var subtitle: String {
+        if isLoading && videos.isEmpty { return "正在扫描下载目录…" }
+        return "\(filtered.count) 个视频 · \(Self.sizeText(filteredBytes))"
     }
 
     var body: some View {
-        mainList
+        VStack(spacing: 0) {
+            PageHeader(title: "视频库", subtitle: subtitle) {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel(Text("正在扫描"))
+                }
+                Button {
+                    Task { await reload() }
+                } label: {
+                    Label("重新扫描", systemImage: "arrow.clockwise")
+                }
+                .disabled(isLoading)
+            }
+
+            if !videos.isEmpty {
+                filterBar
+            }
+
+            Divider()
+            mainList
+        }
         .task { await reload() }
         .onChange(of: state.selectedTab) { _, tab in
             if tab == .library { Task { await reload() } }
@@ -135,42 +114,245 @@ struct LibraryScreen: View {
         }
     }
 
-    private var filterChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                chip(title: "全部", selected: ownerFilter == nil) { ownerFilter = nil }
-                ForEach(owners, id: \.self) { owner in
-                    chip(title: owner, selected: ownerFilter == owner) { ownerFilter = owner }
-                }
+    // MARK: - 列表
+
+    /// UP 主一多，横向 chip 会变成一条又长又难定位的滚轴。
+    /// 改成「全部 + UP 主菜单」：菜单里带搜索、按视频数排序，人再多也能两步内定位。
+    private var filterBar: some View {
+        HStack(spacing: 8) {
+            FilterChip("全部", count: videos.count, selected: ownerFilter == nil) {
+                ownerFilter = nil
             }
-            .padding(.vertical, 2)
+            ownerMenu
+            Spacer(minLength: 0)
         }
-        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+        .padding(.horizontal, AppMetric.pagePadding)
+        .padding(.bottom, 12)
+        .clipped()
     }
 
-    private func chip(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.caption)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .frame(minHeight: 20)
-                .chipBackground(selected: selected)
+    private var ownerMenu: some View {
+        Button { showOwnerPicker.toggle() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "person.2")
+                    .font(.system(size: 12))
+                Text(ownerFilter ?? "UP 主")
+                    .font(.system(size: 13, weight: ownerFilter == nil ? .regular : .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(
+                Capsule().fill(
+                    ownerFilter == nil
+                        ? Color(nsColor: .controlBackgroundColor)
+                        : Color.accentColor.opacity(0.16)
+                )
+            )
+            .overlay(
+                Capsule().strokeBorder(
+                    ownerFilter == nil
+                        ? Color(nsColor: .separatorColor).opacity(0.7)
+                        : Color.accentColor.opacity(0.7),
+                    lineWidth: 0.75
+                )
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help("按 UP 主筛选")
+        .accessibilityLabel(Text(ownerFilter.map { "UP 主：\($0)" } ?? "选择 UP 主"))
+        .popover(isPresented: $showOwnerPicker, arrowEdge: .bottom) {
+            ownerPicker
+        }
+        .onChange(of: showOwnerPicker) { _, showing in
+            if !showing { ownerQuery = "" }
+        }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            if let scanError {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.title2)
-                    .foregroundStyle(.orange)
-                Text(scanError)
-                    .font(.callout)
+    private var ownerPicker: some View {
+        let counts = ownerCounts
+        let filteredOwners = pickerOwners(counts: counts)
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                TextField("搜索 UP 主", text: $ownerQuery)
+                    .textFieldStyle(.plain)
+                    .font(AppFont.body)
+                    .focused($ownerSearchFocused)
+                if !ownerQuery.isEmpty {
+                    Button { ownerQuery = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text("清除搜索"))
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.75)
+            )
+            .padding(12)
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ownerRow(nil, label: "全部视频", count: videos.count)
+                    ForEach(filteredOwners, id: \.self) { owner in
+                        ownerRow(owner, label: owner, count: counts[owner] ?? 0)
+                    }
+                    if filteredOwners.isEmpty {
+                        Text("没有匹配的 UP 主")
+                            .font(AppFont.hint)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 20)
+                    }
+                }
+                .padding(6)
+            }
+            .frame(maxHeight: 320)
+        }
+        .frame(width: 300)
+        .task {
+            // popover 的文本框要等窗口真正上屏才能接收焦点。
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            ownerSearchFocused = true
+        }
+    }
+
+    /// 按视频数降序：常用的 UP 主自然浮到前面；搜索则直接按名字过滤。
+    private func pickerOwners(counts: [String: Int]) -> [String] {
+        let query = ownerQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        return counts.keys
+            .filter { query.isEmpty || $0.lowercased().contains(query) }
+            .sorted { lhs, rhs in
+                let left = counts[lhs] ?? 0
+                let right = counts[rhs] ?? 0
+                if left != right { return left > right }
+                return lhs.localizedStandardCompare(rhs) == .orderedAscending
+            }
+    }
+
+    private var ownerCounts: [String: Int] {
+        Dictionary(grouping: videos.compactMap(\.owner), by: { $0 }).mapValues(\.count)
+    }
+
+    private func ownerRow(_ owner: String?, label: String, count: Int) -> some View {
+        Button {
+            ownerFilter = owner
+            showOwnerPicker = false
+        } label: {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor.opacity(0.12))
+                        .frame(width: 26, height: 26)
+                    if let owner {
+                        Text(String(owner.prefix(1)))
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    } else {
+                        Image(systemName: "film.stack")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                .accessibilityHidden(true)
+
+                Text(label)
+                    .font(AppFont.body)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("\(count)")
+                    .font(AppFont.hint)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .opacity(ownerFilter == owner ? 1 : 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 34)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(ownerFilter == owner ? Color.accentColor.opacity(0.12) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var mainList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: AppMetric.rowSpacing) {
+                    if let actionError {
+                        errorCard(actionError)
+                    }
+                    if filtered.isEmpty {
+                        emptyContent
+                    } else {
+                        ForEach(filtered) { video in
+                            row(video)
+                                .id("video:\(video.path)")
+                        }
+                    }
+                }
+                .padding(.horizontal, AppMetric.pagePadding)
+                .padding(.vertical, 14)
+            }
+            .onChange(of: focusID) { _, newValue in
+                guard let newValue else { return }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                    proxy.scrollTo("video:\(newValue)", anchor: .center)
+                }
+            }
+        }
+    }
+
+    private func errorCard(_ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(.orange)
+            Text(text)
+                .font(AppFont.body)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("关闭") { actionError = nil }
+                .controlSize(.regular)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .adaptiveTint(.orange, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var emptyContent: some View {
+        if let scanError {
+            EmptyStateView(
+                icon: "exclamationmark.triangle",
+                title: "无法读取下载目录",
+                message: scanError
+            ) {
                 HStack(spacing: 8) {
                     Button("打开完全磁盘访问权限…") {
                         PermissionProbe.openFullDiskAccessSettings()
@@ -182,52 +364,71 @@ struct LibraryScreen: View {
                         }
                     }
                 }
-                .controlSize(.small)
-            } else {
-                Image(systemName: "film.stack")
-                    .font(.title2)
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
-                Text(isLoading ? "正在扫描…" : "这里还没有视频")
-                    .foregroundStyle(.secondary)
+                .controlSize(.regular)
             }
-            Text(downloadDir)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .textSelection(.enabled)
+        } else {
+            EmptyStateView(
+                icon: "film.stack",
+                title: isLoading ? "正在扫描…" : "这里还没有视频",
+                message: "下载完成的视频会自动出现在这里。"
+            ) {
+                VStack(spacing: 8) {
+                    Text(downloadDir)
+                        .font(AppFont.mono)
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Button("重新扫描", systemImage: "arrow.clockwise") {
+                        Task {
+                            await scanner.invalidate()
+                            await reload()
+                        }
+                    }
+                }
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 28)
     }
 
     private func row(_ video: LibraryVideo) -> some View {
         let expanded = expandedID == video.path
-        return VStack(alignment: .leading, spacing: 7) {
+        return VStack(spacing: 0) {
             Button {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
                     expandedID = expanded ? nil : video.path
                 }
             } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 14) {
+                    ThumbnailView(path: video.path)
+                        .frame(width: AppMetric.thumbnail.width, height: AppMetric.thumbnail.height)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(video.displayTitle)
-                            .font(.callout)
+                            .font(AppFont.rowTitle)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
+                            .foregroundStyle(.primary)
                         Text(metaLine(video))
-                            .font(.caption)
+                            .font(AppFont.rowMeta)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    Spacer(minLength: 8)
+
+                    Spacer(minLength: 12)
+
                     Text(video.container.uppercased())
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
+                        .font(AppFont.badge)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(.quaternary))
+                        .overlay(Capsule().strokeBorder(.separator, lineWidth: 0.5))
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
                         .accessibilityHidden(true)
                 }
                 .contentShape(Rectangle())
@@ -236,56 +437,88 @@ struct LibraryScreen: View {
             .accessibilityValue(Text(expanded ? "已展开" : "已折叠"))
 
             if expanded {
+                Divider()
+                    .padding(.vertical, 10)
                 detail(video)
                     .transition(reduceMotion ? .identity : .opacity)
             }
         }
-        .padding(.vertical, 3)
+        .rowCard()
     }
 
     private func detail(_ video: LibraryVideo) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            ThumbnailView(path: video.path)
-                .frame(width: 160, height: 90)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                ThumbnailView(path: video.path)
+                    .frame(
+                        width: AppMetric.detailThumbnail.width,
+                        height: AppMetric.detailThumbnail.height
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(video.path)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-                    .truncationMode(.middle)
-
-                HStack(spacing: 6) {
-                    Button("播放") { NSWorkspace.shared.open(URL(fileURLWithPath: video.path)) }
-                    if let iina = Self.iinaURL {
-                        Button("用 IINA 打开") {
-                            NSWorkspace.shared.open(
-                                [URL(fileURLWithPath: video.path)],
-                                withApplicationAt: iina,
-                                configuration: NSWorkspace.OpenConfiguration()
-                            )
-                        }
-                    }
-                    Button("访达中显示") {
-                        NSWorkspace.shared.selectFile(video.path, inFileViewerRootedAtPath: "")
-                    }
-                    Button("复制路径") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(video.path, forType: .string)
-                    }
-                    if let bvid = bvid(for: video) {
-                        Button("打开 B 站") {
-                            NSWorkspace.shared.open(URL(string: "https://www.bilibili.com/video/\(bvid)")!)
-                        }
-                    }
-                    Spacer()
-                    Button("删除…", role: .destructive) { pendingDelete = video }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("文件位置")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(video.path)
+                        .font(AppFont.mono)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                        .truncationMode(.middle)
+                    Text(metaLine(video))
+                        .font(AppFont.rowMeta)
+                        .foregroundStyle(.secondary)
                 }
-                .controlSize(.small)
+                Spacer(minLength: 0)
             }
+
+            HStack(spacing: 8) {
+                Button {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: video.path))
+                } label: {
+                    Label("播放", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+
+                if let iina = Self.iinaURL {
+                    Button {
+                        NSWorkspace.shared.open(
+                            [URL(fileURLWithPath: video.path)],
+                            withApplicationAt: iina,
+                            configuration: NSWorkspace.OpenConfiguration()
+                        )
+                    } label: {
+                        Label("用 IINA 打开", systemImage: "play.rectangle")
+                    }
+                }
+                Button {
+                    NSWorkspace.shared.selectFile(video.path, inFileViewerRootedAtPath: "")
+                } label: {
+                    Label("访达中显示", systemImage: "folder")
+                }
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(video.path, forType: .string)
+                } label: {
+                    Label("复制路径", systemImage: "doc.on.doc")
+                }
+                if let bvid = bvid(for: video) {
+                    Button {
+                        NSWorkspace.shared.open(URL(string: "https://www.bilibili.com/video/\(bvid)")!)
+                    } label: {
+                        Label("打开 B 站", systemImage: "globe")
+                    }
+                }
+                Spacer(minLength: 8)
+                Button(role: .destructive) {
+                    pendingDelete = video
+                } label: {
+                    Label("删除…", systemImage: "trash")
+                }
+            }
+            .controlSize(.regular)
         }
-        .padding(.top, 2)
     }
 
     private func metaLine(_ video: LibraryVideo) -> String {
@@ -360,16 +593,21 @@ struct ThumbnailView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor))
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.quaternary)
             if let image {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else if failed {
-                Image(systemName: "film").foregroundStyle(.tertiary)
+                Image(systemName: "film")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             } else {
-                ProgressView().controlSize(.small)
+                ProgressView()
+                    .controlSize(.small)
             }
         }
         .task(id: path) {
